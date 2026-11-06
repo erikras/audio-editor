@@ -80,8 +80,9 @@ public struct ExportOptions: Equatable {
     public var mono = false
     /// Normalize the mix to this integrated loudness. nil leaves levels alone.
     public var loudnessTarget: Double? = -16
-    /// Peak ceiling before encoding. MP3 encoding overshoots by up to ~0.5 dB, so this sits below -1 dBFS.
-    public var truePeakCeilingDB = -1.5
+    /// Peak ceiling before encoding. MP3 encoding overshoots, by about 1 dB on speech, so this sits below -1 dBFS.
+    /// Overshoot depends on the material, so the decoded peak isn't guaranteed, and inter-sample peaks can run higher.
+    public var truePeakCeilingDB = -2.0
     /// Write markers as chapters.
     public var includeChapters = false
 

@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
 @testable import EditorCore
 
 final class TimecodeTests: XCTestCase {
@@ -186,4 +189,45 @@ final class MP3ExportTests: XCTestCase {
         XCTAssertEqual(report.measuredLoudness! + report.appliedGainDB, -16, accuracy: 1e-9)
         XCTAssertLessThan(try MP3Encoder(sampleRate: 44_100, channelCount: 2, bitrateKbps: 128).inputScale, 1)
     }
+
+    #if canImport(AVFoundation)
+    /// Peaks are limited before encoding, and MP3 encoding overshoots. The decoded file must still stay under -1 dBFS.
+    func testDecodedPeakStaysUnderMinusOneDBFS() throws {
+        let sr = 44_100.0
+        var state: UInt64 = 0x9E3779B97F4A7C15
+        func noise() -> Float {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17
+            return Float(Int64(bitPattern: state) >> 40) / Float(1 << 23)
+        }
+        // Speech-like: syllables of noise with bright sibilance and sharp plosives, which overshoot most in MP3 encoding.
+        var lowpassed: Float = 0
+        let samples = (0..<Int(sr * 20)).map { i -> Float in
+            let t = Double(i) / sr
+            lowpassed += 0.5 * (noise() - lowpassed)
+            let syllable = Float(pow(max(0, sin(2 * .pi * 3.1 * t)), 2))
+            let plosive: Float = t.truncatingRemainder(dividingBy: 0.81) < 0.006 ? 10 : 1
+            return (lowpassed + noise() * 0.5) * syllable * plosive * 0.5
+        }
+        let pcm = PCMData(channels: [samples], sampleRate: sr)
+        var p = Project()
+        let s = AudioSource(name: "bursts", path: "/bursts.wav", duration: 20, channels: 1)
+        p.sources = [s]
+        p.tracks = [Track(name: "T", regions: [Region(sourceID: s.id, name: "bursts", start: 0, offset: 0, length: 20)])]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("peak-test-\(UUID()).mp3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        _ = try MP3Exporter.export(project: p, sources: [s.id: pcm], options: ExportOptions(), to: url)
+
+        let file = try AVAudioFile(forReading: url)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 1 << 16))
+        var peak: Float = 0
+        while file.framePosition < file.length {
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { break }
+            for c in 0..<Int(buffer.format.channelCount) {
+                for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(buffer.floatChannelData![c][i])) }
+            }
+        }
+        XCTAssertLessThanOrEqual(20 * log10(Double(peak)), -1)
+    }
+    #endif
 }
