@@ -72,8 +72,34 @@ public enum SessionImporter {
         }
         project.markers = delegate.markers.sorted { $0.time < $1.time }
 
+        // Cover art: sessions don't always reference it, so look for a usual file name next to the audio.
+        if project.metadata.artworkPath.isEmpty {
+            project.metadata.artworkPath = findArtwork(poolPath: delegate.poolPath, poolLocation: delegate.poolLocation,
+                                                       sessionDirectory: sessionDirectory, fileExists: fileExists) ?? ""
+        }
+
         let ignored = delegate.tracks.flatMap { t in t.activePlugins.map { "\(t.name): \($0)" } }
         return ImportResult(project: project, missingSources: missing, ignoredPlugins: ignored)
+    }
+
+    static func findArtwork(poolPath: String?, poolLocation: String?, sessionDirectory: String, fileExists: (String) -> Bool) -> String? {
+        var dirs: [String] = []
+        if let poolPath, !poolPath.isEmpty {
+            dirs.append(poolPath.hasPrefix("/") ? poolPath : (sessionDirectory as NSString).appendingPathComponent(poolPath))
+        }
+        dirs.append(sessionDirectory)
+        if let poolLocation, !poolLocation.isEmpty { dirs.append(poolLocation) }
+        let names = ["Image", "image", "cover", "Cover", "artwork", "Artwork", "folder"]
+        let exts = ["jpg", "jpeg", "png", "JPG", "PNG"]
+        for dir in dirs {
+            for name in names {
+                for ext in exts {
+                    let path = (dir as NSString).appendingPathComponent("\(name).\(ext)")
+                    if fileExists(path) { return path }
+                }
+            }
+        }
+        return nil
     }
 
     static func candidatePaths(for file: PoolFile, poolPath: String?, poolLocation: String?, sessionDirectory: String) -> [String] {

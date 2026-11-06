@@ -16,6 +16,9 @@ public final class MP3Encoder {
 
     private let lame: OpaquePointer
     public let channelCount: Int
+    /// LAME's presets quietly scale input (0.95 at 128 kbps) to avoid clipping. We limit peaks ourselves,
+    /// so the exporter divides by this to keep the loudness it measured.
+    public let inputScale: Float
     private var buffer: [UInt8] = []
 
     public init(sampleRate: Int, channelCount: Int, bitrateKbps: Int, quality: Int = 2) throws {
@@ -35,6 +38,8 @@ public final class MP3Encoder {
             lame_close(l)
             throw EncoderError.initFailed
         }
+        let scale = lame_get_scale(l)
+        inputScale = scale > 0 ? scale : 1
     }
 
     deinit { lame_close(lame) }
@@ -75,7 +80,8 @@ public struct ExportOptions: Equatable {
     public var mono = false
     /// Normalize the mix to this integrated loudness. nil leaves levels alone.
     public var loudnessTarget: Double? = -16
-    public var truePeakCeilingDB = -1.0
+    /// Peak ceiling before encoding. MP3 encoding overshoots by up to ~0.5 dB, so this sits below -1 dBFS.
+    public var truePeakCeilingDB = -1.5
     /// Write markers as chapters.
     public var includeChapters = false
 
@@ -141,6 +147,7 @@ public enum MP3Exporter {
         let encoder = try MP3Encoder(sampleRate: Int(project.sampleRate), channelCount: channelCount, bitrateKbps: options.bitrateKbps)
         let limiter = PeakLimiter(sampleRate: project.sampleRate, channelCount: channelCount, ceilingDB: options.truePeakCeilingDB)
         let gain = Float(dbToLinear(gainDB))
+        let undoEncoderScale = 1 / encoder.inputScale
 
         var artwork: Data?
         if !project.metadata.artworkPath.isEmpty {
@@ -175,6 +182,9 @@ public enum MP3Exporter {
                     }
                     let ptrs = options.mono ? [l.baseAddress!] : [l.baseAddress!, r.baseAddress!]
                     limiter.process(channels: ptrs, frameCount: n)
+                    if undoEncoderScale != 1 {
+                        for i in 0..<n { l[i] *= undoEncoderScale; r[i] *= undoEncoderScale }
+                    }
                     let skip = min(toSkip, n)
                     toSkip -= skip
                     guard n - skip > 0 else { return Data() }

@@ -66,6 +66,8 @@ struct AudioEditorApp: App {
                     .keyboardShortcut("=")
                 Button("Zoom Out") { model.zoom(by: 1 / 1.5) }
                     .keyboardShortcut("-")
+                Button("Zoom to Fit") { model.zoomToFit() }
+                    .keyboardShortcut("0")
             }
         }
     }

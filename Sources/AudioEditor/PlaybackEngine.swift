@@ -27,7 +27,7 @@ final class PlaybackEngine {
             if self.playing, let mixer = self.mixer {
                 mixer.render(startFrame: self.position, frameCount: n, left: l, right: r)
                 self.position += n
-                if self.position > mixer.durationFrames + Int(self.sampleRate) { self.playing = false }
+                if self.position >= mixer.durationFrames { self.position = mixer.durationFrames; self.playing = false }
             } else {
                 l.update(repeating: 0, count: n)
                 r.update(repeating: 0, count: n)

@@ -14,6 +14,8 @@ final class EditorModel: ObservableObject {
     @Published var selectedTrackID: UUID?
     @Published var pixelsPerSecond: Double = 20
     @Published var playhead: Double = 0
+    /// Bumped to ask the timeline to zoom so the whole episode fits its current width.
+    @Published private(set) var fitRequest = 0
     @Published private(set) var isPlaying = false
     @Published private(set) var pcm: [UUID: PCMData] = [:]
     @Published private(set) var peaks: [UUID: [Float]] = [:]
@@ -184,6 +186,8 @@ final class EditorModel: ObservableObject {
     func togglePlay() { isPlaying ? pause() : play() }
 
     func play() {
+        // Starting at (or past) the end replays from the top.
+        if playhead >= project.duration - 0.05 { seek(to: 0) }
         player.update(project: project, sources: pcm)
         player.play(from: playhead)
         isPlaying = true
@@ -195,7 +199,7 @@ final class EditorModel: ObservableObject {
 
     func pause() {
         player.pause()
-        playhead = player.currentTime
+        playhead = min(player.currentTime, max(project.duration, 0))
         isPlaying = false
         timer?.invalidate()
         timer = nil
@@ -209,7 +213,7 @@ final class EditorModel: ObservableObject {
     func goToStart() { seek(to: 0) }
 
     private func tick() {
-        playhead = player.currentTime
+        playhead = min(player.currentTime, max(project.duration, 0))
         if !player.isPlaying { pause() }
     }
 
@@ -278,7 +282,8 @@ final class EditorModel: ObservableObject {
         pendingSaveDirectory = nil
         notice = nil
         let duration = max(newProject.duration, 60)
-        pixelsPerSecond = max(0.1, min(200, 1100 / duration))
+        pixelsPerSecond = max(0.1, min(200, 800 / duration))
+        zoomToFit()
         loadAudio()
     }
 
@@ -417,6 +422,11 @@ final class EditorModel: ObservableObject {
 
     func updateMetadata(_ change: (inout PodcastMetadata) -> Void) {
         edit { change(&$0.metadata) }
+    }
+
+    func zoomToFit() {
+        guard project.duration > 0 else { return }
+        fitRequest += 1
     }
 
     func zoom(by factor: Double) {

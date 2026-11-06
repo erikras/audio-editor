@@ -38,7 +38,7 @@ struct ExportView: View {
                         Text("-19 LUFS (mono)").tag(-19.0)
                         Text("-23 LUFS (broadcast)").tag(-23.0)
                     }
-                    Text("Peaks are limited to -1 dBFS.").font(.caption).foregroundStyle(.secondary)
+                    Text("Peaks are limited to -1.5 dBFS, leaving room for MP3 encoding.").font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("Write markers as chapters", isOn: $chapters)
                     .disabled(model.project.markers.isEmpty)

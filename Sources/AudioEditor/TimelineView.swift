@@ -20,6 +20,8 @@ struct TimelineSnapshot {
     var playhead: Double = 0
     var isPlaying = false
     var selectedRegionID: UUID?
+    /// Changes whenever the model asks the timeline to zoom so the whole episode fits.
+    var fitRequest = 0
 }
 
 struct TimelineCallbacks {
@@ -32,6 +34,7 @@ struct TimelineCallbacks {
     var deleteSelection: () -> Void
     var togglePlay: () -> Void
     var zoom: (Double) -> Void
+    var setPixelsPerSecond: (Double) -> Void
 }
 
 /// SwiftUI wrapper: a horizontally scrolling AppKit timeline.
@@ -53,6 +56,22 @@ struct TimelineView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let canvas = scroll.documentView as? TimelineCanvas else { return }
+        if canvas.appliedFitRequest != snapshot.fitRequest {
+            canvas.appliedFitRequest = snapshot.fitRequest
+            let available = scroll.contentSize.width
+            let duration = max(snapshot.project.duration, 1)
+            if available > 100 {
+                let pps = Double(available - 20) / duration
+                DispatchQueue.main.async {
+                    canvas.skipRecenter = true
+                    callbacks.setPixelsPerSecond(pps)
+                    scroll.contentView.scroll(to: .zero)
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                }
+            } else {
+                canvas.appliedFitRequest = -1   // not laid out yet; retry on the next update
+            }
+        }
         let oldPPS = canvas.snapshot.pixelsPerSecond
         let visible = scroll.contentView.bounds
         let centerTime = oldPPS > 0 ? Double(visible.midX) / oldPPS : 0
@@ -67,7 +86,9 @@ struct TimelineView: NSViewRepresentable {
         }
 
         // Keep the same moment centered when zooming.
-        if oldPPS != snapshot.pixelsPerSecond, oldPPS > 0 {
+        if canvas.skipRecenter {
+            canvas.skipRecenter = false
+        } else if oldPPS != snapshot.pixelsPerSecond, oldPPS > 0 {
             let x = CGFloat(centerTime * snapshot.pixelsPerSecond) - visible.width / 2
             scroll.contentView.scroll(to: NSPoint(x: max(0, min(x, width - visible.width)), y: 0))
             scroll.reflectScrolledClipView(scroll.contentView)
@@ -88,6 +109,8 @@ struct TimelineView: NSViewRepresentable {
 final class TimelineCanvas: NSView {
     var snapshot = TimelineSnapshot()
     var callbacks: TimelineCallbacks?
+    var appliedFitRequest = 0
+    var skipRecenter = false
 
     private enum Drag {
         case move(regionID: UUID, grabOffset: Double, originalTrack: Int)
@@ -246,7 +269,7 @@ final class TimelineCanvas: NSView {
             curve.move(to: NSPoint(x: rect.minX, y: rect.maxY))
             for i in 1...24 {
                 let f = Double(i) / 24
-                curve.line(to: NSPoint(x: rect.minX + w * CGFloat(f), y: rect.maxY - rect.height * CGFloat(sin(f * .pi / 2))))
+                curve.line(to: NSPoint(x: rect.minX + w * CGFloat(f), y: rect.maxY - rect.height * CGFloat(RegionEnvelope.fadeCurve(f))))
             }
             curve.lineWidth = 1.2
             curve.stroke()
@@ -257,7 +280,7 @@ final class TimelineCanvas: NSView {
             curve.move(to: NSPoint(x: rect.maxX - w, y: rect.minY))
             for i in 1...24 {
                 let f = Double(i) / 24
-                curve.line(to: NSPoint(x: rect.maxX - w + w * CGFloat(f), y: rect.maxY - rect.height * CGFloat(cos(f * .pi / 2))))
+                curve.line(to: NSPoint(x: rect.maxX - w + w * CGFloat(f), y: rect.maxY - rect.height * CGFloat(RegionEnvelope.fadeCurve(1 - f))))
             }
             curve.lineWidth = 1.2
             curve.stroke()

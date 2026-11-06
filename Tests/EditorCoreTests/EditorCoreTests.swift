@@ -25,6 +25,7 @@ final class SessionImportTests: XCTestCase {
         let data = try Data(contentsOf: url)
         return try SessionImporter.importSession(data: data, sessionDirectory: "/Users/someone/Podcasting/EP1", fileExists: { path in
             path == "/Users/someone/Podcasting/EP1/final/edit.wav" || path == "/Users/someone/Podcasting/EP1/final/intro.wav"
+                || path == "/Users/someone/Podcasting/EP1/final/Image.png"
         })
     }
 
@@ -37,6 +38,7 @@ final class SessionImportTests: XCTestCase {
         XCTAssertEqual(m.year, "2026")
         XCTAssertTrue(m.explicit)
         XCTAssertEqual(m.description, "Two hosts catch up & talk about \"travel\".")
+        XCTAssertEqual(m.artworkPath, "/Users/someone/Podcasting/EP1/final/Image.png")
     }
 
     func testTracksRegionsAndFades() throws {
@@ -78,7 +80,9 @@ final class EnvelopeTests: XCTestCase {
         XCTAssertEqual(e.levelDB(at: 2), -6, accuracy: 1e-9)
         XCTAssertEqual(e.levelDB(at: 5), -12, accuracy: 1e-9)
         XCTAssertEqual(e.levelDB(at: 7), -18, accuracy: 1e-9)
-        XCTAssertEqual(e.fadeFactor(at: 0.5), sin(.pi / 4), accuracy: 1e-9)
+        XCTAssertEqual(e.fadeFactor(at: 0.5), 0.5, accuracy: 1e-9)
+        XCTAssertEqual(e.fadeFactor(at: 0.1), (1 - cos(0.1 * .pi)) / 2, accuracy: 1e-9)
+        XCTAssertEqual(e.fadeFactor(at: 9), 0.5, accuracy: 1e-9)
         XCTAssertEqual(e.fadeFactor(at: 10), 0, accuracy: 1e-9)
         XCTAssertTrue(e.isFlat(from: 1.5, to: 3.5))
         XCTAssertFalse(e.isFlat(from: 3, to: 5))
@@ -180,5 +184,6 @@ final class MP3ExportTests: XCTestCase {
         XCTAssertGreaterThan(data.count, 20_000)   // ~2.5 s at 128 kbps
         XCTAssertNotNil(report.measuredLoudness)
         XCTAssertEqual(report.measuredLoudness! + report.appliedGainDB, -16, accuracy: 1e-9)
+        XCTAssertLessThan(try MP3Encoder(sampleRate: 44_100, channelCount: 2, bitrateKbps: 128).inputScale, 1)
     }
 }

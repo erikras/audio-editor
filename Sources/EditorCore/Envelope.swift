@@ -44,14 +44,20 @@ public struct RegionEnvelope {
         return level
     }
 
-    /// Fade multiplier (0...1) at region-relative time `t`. Fades use an equal-power (sine) curve.
+    /// S-shaped fade curve: starts and ends gently, half gain at the midpoint.
+    @inlinable public static func fadeCurve(_ x: Double) -> Double {
+        let c = max(0, min(1, x))
+        return (1 - cos(c * .pi)) / 2
+    }
+
+    /// Fade multiplier (0...1) at region-relative time `t`.
     public func fadeFactor(at t: Double) -> Double {
         var g = 1.0
         if fadeIn > 0, t < fadeIn {
-            g *= sin(max(t, 0) / fadeIn * .pi / 2)
+            g *= Self.fadeCurve(max(t, 0) / fadeIn)
         }
         if fadeOut > 0, t > length - fadeOut {
-            g *= sin(max(length - t, 0) / fadeOut * .pi / 2)
+            g *= Self.fadeCurve(max(length - t, 0) / fadeOut)
         }
         return g
     }

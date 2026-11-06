@@ -49,6 +49,7 @@ struct ContentView: View {
         s.playhead = model.playhead
         s.isPlaying = model.isPlaying
         s.selectedRegionID = model.selectedRegionID
+        s.fitRequest = model.fitRequest
         return s
     }
 
@@ -65,7 +66,8 @@ struct ContentView: View {
             nudge: { model.nudgeSelectedRegion(by: $0) },
             deleteSelection: { model.deleteSelectedRegion() },
             togglePlay: { model.togglePlay() },
-            zoom: { model.zoom(by: $0) })
+            zoom: { model.zoom(by: $0) },
+            setPixelsPerSecond: { model.pixelsPerSecond = max(0.1, min(2000, $0)) })
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) {
