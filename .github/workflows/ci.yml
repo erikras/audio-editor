@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app || true
+          swift --version
+      - name: Build
+        run: swift build 2>&1 | tee build.log
+      - name: Test
+        run: swift test 2>&1 | tee test.log
+      - name: Build app
+        run: scripts/build-app.sh
+      - name: Package app
+        run: ditto -c -k --keepParent "build/Audio Editor.app" "build/Audio-Editor.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Audio-Editor
+          path: build/Audio-Editor.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs
+          path: "*.log"
