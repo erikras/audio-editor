@@ -9,7 +9,7 @@ struct Inspector: View {
         if let region = model.selectedRegion {
             RegionInspector(region: region)
         } else {
-            Text("Select a region to adjust its position, fades and gain. Drag regions to align them; hold ⌥ to turn off snapping. Arrow keys nudge by 10 ms (⇧ for 100 ms).")
+            Text("Select a region to adjust its position, fades and gain. Drag regions to align them; hold ⌥ to turn off snapping. Arrow keys nudge by 10 ms (⇧ for 100 ms). In a selected region, drag the yellow line for volume, ⌘-click to add a volume point, and right-click a point to delete it. Press M for a marker at the playhead; drag markers in the ruler and double-click to rename.")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
@@ -39,6 +39,8 @@ struct RegionInspector: View {
                 HStack {
                     Button("Start at Playhead") { model.alignSelectedRegionToPlayhead() }
                     Button("Split") { model.splitSelectedRegionAtPlayhead() }
+                    Button("Auto Level") { model.autoLevelSelectedRegion() }
+                        .help("Set the gain so this region sits at the standard loudness (-16 LUFS)")
                     Button("Delete", role: .destructive) { model.deleteSelectedRegion() }
                 }
                 .controlSize(.small)

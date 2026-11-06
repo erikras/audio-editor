@@ -171,6 +171,82 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    // MARK: Markers
+
+    func addMarkerAtPlayhead() {
+        let at = playhead
+        edit { p in
+            p.markers.append(Marker(name: "Marker \(p.markers.count + 1)", time: at))
+            p.markers.sort { $0.time < $1.time }
+        }
+    }
+
+    func renameMarker(_ id: UUID) {
+        guard let marker = project.markers.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Marker"
+        alert.informativeText = "Markers become chapters when you export with chapters turned on."
+        let field = NSTextField(string: marker.name)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        edit { p in
+            if let i = p.markers.firstIndex(where: { $0.id == id }) { p.markers[i].name = name }
+        }
+    }
+
+    // MARK: Auto level
+
+    /// Whether audio added with Import Audio is auto-leveled once it has loaded.
+    var autoLevelOnImport: Bool {
+        get { UserDefaults.standard.object(forKey: "autoLevelOnImport") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "autoLevelOnImport"); objectWillChange.send() }
+    }
+
+    /// Regions waiting for their audio to load before being auto-leveled.
+    private var pendingAutoLevel: Set<UUID> = []
+
+    /// Sets the selected region's gain so its audio sits at the standard loudness (volume changes move with it).
+    func autoLevelSelectedRegion() {
+        guard let id = selectedRegionID else { return }
+        autoLevel(regionIDs: [id], undoable: true)
+    }
+
+    private func autoLevel(regionIDs: [UUID], undoable: Bool) {
+        let jobs: [(UUID, Region, PCMData)] = regionIDs.compactMap { id in
+            guard let loc = project.locate(region: id) else { return nil }
+            let region = project.tracks[loc.track].regions[loc.region]
+            guard let pcm = pcm[region.sourceID] else { return nil }
+            return (id, region, pcm)
+        }
+        guard !jobs.isEmpty else {
+            if undoable { notice = "That region's audio hasn't loaded yet." }
+            return
+        }
+        Task.detached(priority: .userInitiated) {
+            let gains = jobs.map { job in (job.0, AutoLevel.gainDB(for: job.1, pcm: job.2)) }
+            await MainActor.run {
+                let apply: (inout Project) -> Void = { p in
+                    for (id, gain) in gains {
+                        guard let gain, let loc = p.locate(region: id) else { continue }
+                        var r = p.tracks[loc.track].regions[loc.region]
+                        let delta = gain - r.gainDB
+                        r.gainDB = gain
+                        for i in r.gainRamps.indices { r.gainRamps[i].gainDB += delta }
+                        p.tracks[loc.track].regions[loc.region] = r
+                    }
+                }
+                self.edit(apply)
+                if gains.contains(where: { $0.1 == nil }) { self.notice = "Some audio is silent, so it wasn't auto-leveled." }
+            }
+        }
+    }
+
     func addTrack() {
         edit { $0.tracks.append(Track(name: "Track \($0.tracks.count + 1)", voice: VoiceSettings(enabled: true))) }
         selectedTrackID = project.tracks.last?.id
@@ -314,6 +390,13 @@ final class EditorModel: ObservableObject {
                             self.project.sources[i].channels = decoded.pcm.channelCount
                         }
                         self.player.update(project: self.project, sources: self.pcm)
+                        let ready = self.pendingAutoLevel.filter { rid in
+                            self.project.locate(region: rid).map { self.project.tracks[$0.track].regions[$0.region].sourceID == id } ?? false
+                        }
+                        if !ready.isEmpty {
+                            self.pendingAutoLevel.subtract(ready)
+                            self.autoLevel(regionIDs: Array(ready), undoable: false)
+                        }
                     case .failure(let error):
                         self.failed[id] = error.localizedDescription
                     }
@@ -358,12 +441,15 @@ final class EditorModel: ObservableObject {
                 trackIndex = p.tracks.count - 1
             }
             var cursor = at
+            let level = autoLevelOnImport
             for url in urls {
                 let duration = Self.probeDuration(url) ?? 0
                 let source = AudioSource(name: url.lastPathComponent, path: url.path, duration: duration, channels: 2)
                 p.sources.append(source)
-                p.tracks[trackIndex].regions.append(Region(sourceID: source.id, name: url.deletingPathExtension().lastPathComponent,
-                                                           start: cursor, offset: 0, length: max(duration, 1)))
+                let region = Region(sourceID: source.id, name: url.deletingPathExtension().lastPathComponent,
+                                    start: cursor, offset: 0, length: max(duration, 1))
+                p.tracks[trackIndex].regions.append(region)
+                if level { pendingAutoLevel.insert(region.id) }
                 cursor += duration
             }
             p.tracks[trackIndex].regions.sort { $0.start < $1.start }

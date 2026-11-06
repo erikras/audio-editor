@@ -48,6 +48,13 @@ struct AudioEditorApp: App {
                     .keyboardShortcut("l")
                 Button("Delete Region") { model.deleteSelectedRegion() }
                     .keyboardShortcut(.delete, modifiers: [.command])
+                Button("Auto Level Region") { model.autoLevelSelectedRegion() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
+                    .disabled(model.selectedRegionID == nil)
+                Toggle("Auto Level Imported Audio", isOn: Binding(get: { model.autoLevelOnImport }, set: { model.autoLevelOnImport = $0 }))
+                Divider()
+                Button("Add Marker at Playhead") { model.addMarkerAtPlayhead() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
                 Divider()
                 Button("Add Track") { model.addTrack() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])

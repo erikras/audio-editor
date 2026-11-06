@@ -40,7 +40,7 @@ final class PlaybackEngine {
     }
 
     func update(project: Project, sources: [UUID: PCMData]) {
-        let next = MixRenderer(project: project, sources: sources)
+        let next = MixRenderer(project: project, sources: sources, respectSolo: true)
         lock.lock()
         let at = position
         lock.unlock()

@@ -67,7 +67,9 @@ struct ContentView: View {
             deleteSelection: { model.deleteSelectedRegion() },
             togglePlay: { model.togglePlay() },
             zoom: { model.zoom(by: $0) },
-            setPixelsPerSecond: { model.pixelsPerSecond = max(0.1, min(2000, $0)) })
+            setPixelsPerSecond: { model.pixelsPerSecond = max(0.1, min(2000, $0)) },
+            edit: { model.edit($0) },
+            renameMarker: { model.renameMarker($0) })
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) {
@@ -203,6 +205,11 @@ struct TrackHeader: View {
                 }
                 .toggleStyle(.button)
                 .help("Mute")
+                Toggle(isOn: Binding(get: { track.solo }, set: { s in model.updateTrack(track.id) { $0.solo = s } })) {
+                    Text("S").font(.caption.bold())
+                }
+                .toggleStyle(.button)
+                .help("Solo (playback only; exports include every unmuted track)")
                 Menu {
                     Button("Delete Track", role: .destructive) { model.deleteTrack(track.id) }
                 } label: { Image(systemName: "ellipsis") }

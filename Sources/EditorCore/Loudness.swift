@@ -168,3 +168,41 @@ public final class PeakLimiter {
     /// Frames of delay between input and output.
     public var latency: Int { lookahead }
 }
+
+/// Hindenburg-style auto leveling: the gain that brings a stretch of a source to a target loudness.
+public enum AutoLevel {
+    public static let defaultTargetLUFS = -16.0
+
+    /// Integrated loudness (LUFS) of `pcm` from `offset` for `length` seconds, or nil if it is silent.
+    public static func loudness(of pcm: PCMData, offset: Double = 0, length: Double? = nil) -> Double? {
+        let start = max(0, min(pcm.frameCount, Int((offset * pcm.sampleRate).rounded())))
+        let end = length.map { min(pcm.frameCount, start + Int(($0 * pcm.sampleRate).rounded())) } ?? pcm.frameCount
+        guard end > start else { return nil }
+        let channels = min(pcm.channelCount, 2)
+        let meter = LoudnessMeter(sampleRate: pcm.sampleRate, channelCount: channels)
+        let chunk = 1 << 15
+        var planes = [[Float]](repeating: [Float](repeating: 0, count: chunk), count: channels)
+        var frame = start
+        while frame < end {
+            let n = min(chunk, end - frame)
+            for c in 0..<channels {
+                for i in 0..<n { planes[c][i] = pcm.samples[(frame + i) * pcm.channelCount + c] }
+            }
+            if channels == 1 {
+                planes[0].withUnsafeBufferPointer { meter.add(channels: [$0.baseAddress!], frameCount: n) }
+            } else {
+                planes[0].withUnsafeBufferPointer { l in
+                    planes[1].withUnsafeBufferPointer { r in meter.add(channels: [l.baseAddress!, r.baseAddress!], frameCount: n) }
+                }
+            }
+            frame += n
+        }
+        return meter.integratedLoudness
+    }
+
+    /// Region gain (dB) that puts the region's audio at `target` LUFS, ignoring fades and volume changes.
+    public static func gainDB(for region: Region, pcm: PCMData, target: Double = defaultTargetLUFS) -> Double? {
+        guard let measured = loudness(of: pcm, offset: region.offset, length: region.length) else { return nil }
+        return ((target - measured) * 10).rounded() / 10
+    }
+}

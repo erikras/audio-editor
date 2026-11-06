@@ -35,6 +35,9 @@ struct TimelineCallbacks {
     var togglePlay: () -> Void
     var zoom: (Double) -> Void
     var setPixelsPerSecond: (Double) -> Void
+    /// A one-step undoable change (add or delete a marker or volume point).
+    var edit: ((inout Project) -> Void) -> Void
+    var renameMarker: (UUID) -> Void
 }
 
 /// SwiftUI wrapper: a horizontally scrolling AppKit timeline.
@@ -118,8 +121,21 @@ final class TimelineCanvas: NSView {
         case trimEnd(regionID: UUID, original: Region)
         case fadeIn(regionID: UUID)
         case fadeOut(regionID: UUID)
+        case rampStart(regionID: UUID, rampID: UUID)
+        case rampEnd(regionID: UUID, rampID: UUID)
+        case volumeLine(original: Region, rect: NSRect, startDB: Double)
+        case marker(id: UUID)
         case scrub
     }
+
+    /// What a context-menu item acts on.
+    private struct MenuContext {
+        var time: Double
+        var regionID: UUID?
+        var rampID: UUID?
+        var markerID: UUID?
+    }
+    private var menuContext: MenuContext?
     private var drag: Drag?
     private var snapGuide: Double?
 
@@ -135,6 +151,69 @@ final class TimelineCanvas: NSView {
         let i = Int((y - TimelineMetrics.rulerHeight) / TimelineMetrics.trackHeight)
         return i < snapshot.project.tracks.count ? i : nil
     }
+    // MARK: Volume line geometry (absolute dB, +12 at the top to -40 at the bottom)
+
+    private static let volumeTopDB = 12.0, volumeBottomDB = -40.0
+
+    private func volumeY(_ db: Double, in rect: NSRect) -> CGFloat {
+        let top = rect.minY + 14, bottom = rect.maxY - 4
+        let c = max(Self.volumeBottomDB, min(Self.volumeTopDB, db))
+        return top + (bottom - top) * CGFloat((Self.volumeTopDB - c) / (Self.volumeTopDB - Self.volumeBottomDB))
+    }
+
+    private func volumeDB(atY y: CGFloat, in rect: NSRect) -> Double {
+        let top = rect.minY + 14, bottom = rect.maxY - 4
+        let f = Double((y - top) / max(bottom - top, 1))
+        let db = Self.volumeTopDB - f * (Self.volumeTopDB - Self.volumeBottomDB)
+        return (max(Self.volumeBottomDB, min(Self.volumeTopDB, db)) * 2).rounded() / 2
+    }
+
+    /// Corner points of the volume line: each volume change has a start (old level) and an end (new level).
+    private func volumePoints(_ region: Region, in rect: NSRect) -> [(point: NSPoint, rampID: UUID, isEnd: Bool)] {
+        var out: [(NSPoint, UUID, Bool)] = []
+        var level = region.gainDB
+        for ramp in region.gainRamps.sorted(by: { $0.start < $1.start }) {
+            out.append((NSPoint(x: rect.minX + x(ramp.start), y: volumeY(level, in: rect)), ramp.id, false))
+            out.append((NSPoint(x: rect.minX + x(ramp.start + ramp.length), y: volumeY(ramp.gainDB, in: rect)), ramp.id, true))
+            level = ramp.gainDB
+        }
+        return out.map { (point: $0.0, rampID: $0.1, isEnd: $0.2) }
+    }
+
+    private func volumeHandle(at point: NSPoint, region: Region, rect: NSRect) -> (rampID: UUID, isEnd: Bool)? {
+        // Prefer ends, which are what you usually drag.
+        let hits = volumePoints(region, in: rect).filter { abs($0.point.x - point.x) <= 6 && abs($0.point.y - point.y) <= 6 }
+        guard let best = hits.min(by: { ($0.isEnd ? 0 : 1, abs($0.point.x - point.x)) < ($1.isEnd ? 0 : 1, abs($1.point.x - point.x)) }) else { return nil }
+        return (best.rampID, best.isEnd)
+    }
+
+    private func isNearVolumeLine(_ point: NSPoint, region: Region, rect: NSRect) -> Bool {
+        let rt = time(point.x) - region.start
+        return abs(volumeY(RegionEnvelope(region).levelDB(at: rt), in: rect) - point.y) <= 4
+    }
+
+    private func markerHit(_ point: NSPoint) -> Marker? {
+        guard point.y < TimelineMetrics.rulerHeight + 14 else { return nil }
+        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        return snapshot.project.markers.last { m in
+            let mx = x(m.time)
+            let labelWidth = (m.name as NSString).size(withAttributes: [.font: font]).width + 6
+            return point.x >= mx - 5 && point.x <= mx + max(labelWidth, 5)
+        }
+    }
+
+    private func addVolumeChange(regionID: UUID, at t: Double) -> UUID? {
+        guard let region = locate(regionID)?.region else { return nil }
+        let rt = max(0, min(t - region.start, region.length - 0.02))
+        let ramp = GainRamp(start: rt, length: min(0.3, region.length - rt), gainDB: RegionEnvelope(region).levelDB(at: rt))
+        callbacks?.updateGesture { p in
+            guard let loc = p.locate(region: regionID) else { return }
+            p.tracks[loc.track].regions[loc.region].gainRamps.append(ramp)
+            p.tracks[loc.track].regions[loc.region].gainRamps.sort { $0.start < $1.start }
+        }
+        return ramp.id
+    }
+
     private func regionRect(track: Int, region: Region) -> NSRect {
         NSRect(x: x(region.start), y: trackTop(track) + 3, width: max(x(region.end) - x(region.start), 1), height: TimelineMetrics.trackHeight - 6)
     }
@@ -286,25 +365,24 @@ final class TimelineCanvas: NSView {
             curve.stroke()
         }
 
-        // Volume line for inner volume changes.
-        if !region.gainRamps.isEmpty {
+        // Volume line: region gain plus volume changes. Editable when the region is selected.
+        if !region.gainRamps.isEmpty || selected {
             let line = NSBezierPath()
-            let top = rect.minY + 14, bottom = rect.maxY - 4
-            func y(forDB db: Double) -> CGFloat {
-                let rel = max(-30, min(6, db - region.gainDB))   // dB relative to base, -30...+6
-                return top + (bottom - top) * CGFloat((6 - rel) / 36)
-            }
-            line.move(to: NSPoint(x: rect.minX, y: y(forDB: region.gainDB)))
-            var level = region.gainDB
-            for ramp in region.gainRamps.sorted(by: { $0.start < $1.start }) {
-                line.line(to: NSPoint(x: rect.minX + x(ramp.start), y: y(forDB: level)))
-                line.line(to: NSPoint(x: rect.minX + x(ramp.start + ramp.length), y: y(forDB: ramp.gainDB)))
-                level = ramp.gainDB
-            }
-            line.line(to: NSPoint(x: rect.maxX, y: y(forDB: level)))
-            NSColor.systemYellow.setStroke()
-            line.lineWidth = 1.5
+            line.move(to: NSPoint(x: rect.minX, y: volumeY(region.gainDB, in: rect)))
+            for p in volumePoints(region, in: rect) { line.line(to: p.point) }
+            line.line(to: NSPoint(x: rect.maxX, y: volumeY(RegionEnvelope(region).levelDB(at: region.length), in: rect)))
+            NSColor.systemYellow.withAlphaComponent(selected ? 1 : 0.8).setStroke()
+            line.lineWidth = selected ? 2 : 1.5
             line.stroke()
+            if selected {
+                for p in volumePoints(region, in: rect) {
+                    let r = NSRect(x: p.point.x - 3.5, y: p.point.y - 3.5, width: 7, height: 7)
+                    NSColor.systemYellow.setFill()
+                    r.fill()
+                    NSColor.black.withAlphaComponent(0.6).setStroke()
+                    NSBezierPath(rect: r).stroke()
+                }
+            }
         }
 
         // Title.
@@ -343,6 +421,17 @@ final class TimelineCanvas: NSView {
         let point = convert(event.locationInWindow, from: nil)
         guard let callbacks else { return }
 
+        if let marker = markerHit(point) {
+            if event.clickCount == 2 {
+                callbacks.renameMarker(marker.id)
+                drag = nil
+            } else {
+                callbacks.beginGesture()
+                drag = .marker(id: marker.id)
+            }
+            return
+        }
+
         if point.y < TimelineMetrics.rulerHeight {
             drag = .scrub
             callbacks.seek(max(0, time(point.x)))
@@ -363,7 +452,20 @@ final class TimelineCanvas: NSView {
             callbacks.seek(time(point.x))
             return
         }
+        let wasSelected = region.id == snapshot.selectedRegionID
         callbacks.beginGesture()
+
+        // ⌘-click adds a volume change and lets you drag it straight away.
+        if event.modifierFlags.contains(.command) {
+            if let rampID = addVolumeChange(regionID: region.id, at: time(point.x)) {
+                drag = .rampEnd(regionID: region.id, rampID: rampID)
+            }
+            return
+        }
+        if wasSelected, let handle = volumeHandle(at: point, region: region, rect: rect) {
+            drag = handle.isEnd ? .rampEnd(regionID: region.id, rampID: handle.rampID) : .rampStart(regionID: region.id, rampID: handle.rampID)
+            return
+        }
 
         let fadeInX = rect.minX + x(region.fadeIn)
         let fadeOutX = rect.maxX - x(region.fadeOut)
@@ -372,6 +474,8 @@ final class TimelineCanvas: NSView {
             drag = .fadeIn(regionID: region.id)
         } else if nearTop && abs(point.x - fadeOutX) <= TimelineMetrics.handleSize {
             drag = .fadeOut(regionID: region.id)
+        } else if wasSelected && !nearTop && isNearVolumeLine(point, region: region, rect: rect) {
+            drag = .volumeLine(original: region, rect: rect, startDB: volumeDB(atY: point.y, in: rect))
         } else if abs(point.x - rect.minX) <= TimelineMetrics.edgeGrab {
             drag = .trimStart(regionID: region.id, original: region)
         } else if abs(point.x - rect.maxX) <= TimelineMetrics.edgeGrab {
@@ -391,6 +495,55 @@ final class TimelineCanvas: NSView {
         switch drag {
         case .scrub:
             callbacks.seek(max(0, t))
+        case .marker(let id):
+            var mt = max(0, t)
+            snapGuide = nil
+            if snapping {
+                let tolerance = Double(TimelineMetrics.snapDistance) / pps
+                var targets = [snapshot.playhead]
+                for track in snapshot.project.tracks { for r in track.regions { targets += [r.start, r.end] } }
+                if let best = targets.min(by: { abs($0 - mt) < abs($1 - mt) }), abs(best - mt) <= tolerance { mt = best; snapGuide = best }
+            }
+            callbacks.updateGesture { p in
+                guard let i = p.markers.firstIndex(where: { $0.id == id }) else { return }
+                p.markers[i].time = mt
+                p.markers.sort { $0.time < $1.time }
+            }
+        case .rampEnd(let regionID, let rampID):
+            guard let (trackIndex, region) = locate(regionID) else { return }
+            let rect = regionRect(track: trackIndex, region: region)
+            let db = volumeDB(atY: point.y, in: rect)
+            let rt = max(0, min(t - region.start, region.length))
+            callbacks.updateGesture { p in
+                guard let loc = p.locate(region: regionID),
+                      let k = p.tracks[loc.track].regions[loc.region].gainRamps.firstIndex(where: { $0.id == rampID }) else { return }
+                var ramp = p.tracks[loc.track].regions[loc.region].gainRamps[k]
+                ramp.length = max(0.01, rt - ramp.start)
+                ramp.gainDB = db
+                p.tracks[loc.track].regions[loc.region].gainRamps[k] = ramp
+            }
+        case .rampStart(let regionID, let rampID):
+            guard let region = locate(regionID)?.region else { return }
+            let rt = max(0, min(t - region.start, region.length))
+            callbacks.updateGesture { p in
+                guard let loc = p.locate(region: regionID),
+                      let k = p.tracks[loc.track].regions[loc.region].gainRamps.firstIndex(where: { $0.id == rampID }) else { return }
+                var ramp = p.tracks[loc.track].regions[loc.region].gainRamps[k]
+                let end = ramp.start + ramp.length
+                ramp.start = min(rt, end - 0.01)
+                ramp.length = end - ramp.start
+                p.tracks[loc.track].regions[loc.region].gainRamps[k] = ramp
+                p.tracks[loc.track].regions[loc.region].gainRamps.sort { $0.start < $1.start }
+            }
+        case .volumeLine(let original, let rect, let startDB):
+            let delta = volumeDB(atY: point.y, in: rect) - startDB
+            callbacks.updateGesture { p in
+                guard let loc = p.locate(region: original.id) else { return }
+                var r = original
+                r.gainDB = original.gainDB + delta
+                for i in r.gainRamps.indices { r.gainRamps[i].gainDB += delta }
+                p.tracks[loc.track].regions[loc.region] = r
+            }
         case .move(let id, let grab, _):
             var newStart = max(0, t - grab)
             snapGuide = nil
@@ -483,6 +636,65 @@ final class TimelineCanvas: NSView {
         return out
     }
 
+    // MARK: Context menu
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        var context = MenuContext(time: max(0, time(point.x)))
+        let menu = NSMenu()
+        if let marker = markerHit(point) {
+            context.markerID = marker.id
+            menu.addItem(withTitle: "Rename Marker…", action: #selector(menuRenameMarker), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Delete Marker", action: #selector(menuDeleteMarker), keyEquivalent: "").target = self
+        } else if let hit = hitRegion(at: point) {
+            context.regionID = hit.region.id
+            if let handle = volumeHandle(at: point, region: hit.region, rect: hit.rect) {
+                context.rampID = handle.rampID
+                menu.addItem(withTitle: "Delete Volume Change", action: #selector(menuDeleteRamp), keyEquivalent: "").target = self
+            }
+            menu.addItem(withTitle: "Add Volume Change Here", action: #selector(menuAddRamp), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Add Marker Here", action: #selector(menuAddMarker), keyEquivalent: "").target = self
+        } else {
+            menu.addItem(withTitle: "Add Marker Here", action: #selector(menuAddMarker), keyEquivalent: "").target = self
+        }
+        menuContext = context
+        return menu
+    }
+
+    @objc private func menuAddMarker() {
+        guard let c = menuContext else { return }
+        callbacks?.edit { p in
+            p.markers.append(Marker(name: "Marker \(p.markers.count + 1)", time: c.time))
+            p.markers.sort { $0.time < $1.time }
+        }
+    }
+
+    @objc private func menuRenameMarker() {
+        guard let id = menuContext?.markerID else { return }
+        callbacks?.renameMarker(id)
+    }
+
+    @objc private func menuDeleteMarker() {
+        guard let id = menuContext?.markerID else { return }
+        callbacks?.edit { $0.markers.removeAll { $0.id == id } }
+    }
+
+    @objc private func menuAddRamp() {
+        guard let c = menuContext, let regionID = c.regionID else { return }
+        callbacks?.select(regionID, nil)
+        callbacks?.beginGesture()
+        _ = addVolumeChange(regionID: regionID, at: c.time)
+        callbacks?.endGesture()
+    }
+
+    @objc private func menuDeleteRamp() {
+        guard let c = menuContext, let regionID = c.regionID, let rampID = c.rampID else { return }
+        callbacks?.edit { p in
+            guard let loc = p.locate(region: regionID) else { return }
+            p.tracks[loc.track].regions[loc.region].gainRamps.removeAll { $0.id == rampID }
+        }
+    }
+
     // MARK: Keyboard & gestures
 
     override func keyDown(with event: NSEvent) {
@@ -493,6 +705,12 @@ final class TimelineCanvas: NSView {
         case 123: callbacks.nudge(-step)                     // left arrow
         case 124: callbacks.nudge(step)                      // right arrow
         case 51, 117: callbacks.deleteSelection()            // delete, forward delete
+        case 46 where event.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // M: marker at playhead
+            let at = snapshot.playhead
+            callbacks.edit { p in
+                p.markers.append(Marker(name: "Marker \(p.markers.count + 1)", time: at))
+                p.markers.sort { $0.time < $1.time }
+            }
         default: super.keyDown(with: event)
         }
     }

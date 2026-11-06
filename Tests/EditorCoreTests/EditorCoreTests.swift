@@ -495,3 +495,30 @@ final class TruePeakTests: XCTestCase {
         XCTAssertGreaterThan(meter.truePeakDB, -2)    // limits, doesn't crush
     }
 }
+
+
+final class SoloAndAutoLevelTests: XCTestCase {
+    func testSoloIsPlaybackOnly() {
+        let pcm = PCMData(channels: [[1, 1, 1, 1]], sampleRate: 4)
+        var p = Project(); p.sampleRate = 4
+        let s = AudioSource(name: "s", path: "/s", duration: 1, channels: 1)
+        p.sources = [s]
+        var a = Track(name: "A", regions: [Region(sourceID: s.id, name: "a", start: 0, offset: 0, length: 1)])
+        a.solo = true
+        let b = Track(name: "B", regions: [Region(sourceID: s.id, name: "b", start: 0, offset: 0, length: 1)])
+        p.tracks = [a, b]
+        XCTAssertEqual(Mixer(project: p, sources: [s.id: pcm], respectSolo: true).render(startFrame: 0, frameCount: 4).left, [1, 1, 1, 1])
+        XCTAssertEqual(Mixer(project: p, sources: [s.id: pcm]).render(startFrame: 0, frameCount: 4).left, [2, 2, 2, 2])
+    }
+
+    func testAutoLevelBringsRegionToTarget() {
+        let sr = 48_000.0
+        let amp = dbToLinear(-30)
+        let sine = (0..<Int(sr * 4)).map { Float(amp * sin(2 * .pi * 1000 * Double($0) / sr)) }
+        let pcm = PCMData(channels: [sine, sine], sampleRate: sr)   // stereo -30 dBFS 1 kHz reads -30 LUFS
+        let region = Region(sourceID: UUID(), name: "r", start: 0, offset: 0.5, length: 3)
+        let gain = AutoLevel.gainDB(for: region, pcm: pcm, target: -16)!
+        XCTAssertEqual(gain, 14, accuracy: 0.2)
+        XCTAssertNil(AutoLevel.loudness(of: PCMData(channels: [[Float](repeating: 0, count: 48_000)], sampleRate: sr)))
+    }
+}

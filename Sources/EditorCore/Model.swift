@@ -53,6 +53,8 @@ public struct Track: Codable, Equatable, Identifiable {
     public var name: String
     public var volumeDB: Double = 0
     public var muted = false
+    /// Solo affects playback only; exports always include every unmuted track.
+    public var solo = false
     public var regions: [Region] = []
     /// Speech processing (clean-up EQ, de-esser, compressor) applied to the whole track.
     public var voice = VoiceSettings()
@@ -74,6 +76,7 @@ public struct Track: Codable, Equatable, Identifiable {
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Track"
         volumeDB = try c.decodeIfPresent(Double.self, forKey: .volumeDB) ?? 0
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        solo = try c.decodeIfPresent(Bool.self, forKey: .solo) ?? false
         regions = try c.decodeIfPresent([Region].self, forKey: .regions) ?? []
         voice = try c.decodeIfPresent(VoiceSettings.self, forKey: .voice) ?? VoiceSettings()
     }

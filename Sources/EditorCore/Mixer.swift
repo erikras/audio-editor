@@ -28,10 +28,12 @@ public struct Mixer {
     public let durationFrames: Int
 
     /// Regions whose source isn't in `sources` (not yet decoded, or missing on disk) render as silence.
-    public init(project: Project, sources: [UUID: PCMData]) {
+    /// `respectSolo`: when any track is soloed, render only soloed tracks (playback). Export passes false.
+    public init(project: Project, sources: [UUID: PCMData], respectSolo: Bool = false) {
         sampleRate = project.sampleRate
+        let soloing = respectSolo && project.tracks.contains { $0.solo && !$0.muted }
         var prepared: [PreparedTrack] = []
-        for track in project.tracks where !track.muted {
+        for track in project.tracks where !track.muted && (!soloing || track.solo) {
             var regions: [PreparedRegion] = []
             for region in track.regions {
                 guard let pcm = sources[region.sourceID], region.length > 0 else { continue }
@@ -132,8 +134,8 @@ public final class MixRenderer {
     /// Long enough for several time constants of the compressor's 150 ms release.
     public static let preroll = 22_050
 
-    public init(project: Project, sources: [UUID: PCMData]) {
-        let mixer = Mixer(project: project, sources: sources)
+    public init(project: Project, sources: [UUID: PCMData], respectSolo: Bool = false) {
+        let mixer = Mixer(project: project, sources: sources, respectSolo: respectSolo)
         self.mixer = mixer
         processors = (0..<mixer.trackCount).map { i in
             let info = mixer.trackInfo(i)
