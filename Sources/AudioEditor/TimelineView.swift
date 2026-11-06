@@ -146,7 +146,7 @@ final class TimelineCanvas: NSView {
             guard mx >= dirtyRect.minX - 100, mx <= dirtyRect.maxX else { continue }
             NSColor.systemOrange.setFill()
             NSRect(x: mx, y: 0, width: 1, height: bounds.height).fill()
-            (marker.name as NSString).draw(at: NSPoint(x: mx + 3, y: 2), withAttributes: [
+            (marker.name as NSString).draw(at: NSPoint(x: mx + 3, y: TimelineMetrics.rulerHeight + 1), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.systemOrange,
             ])
         }

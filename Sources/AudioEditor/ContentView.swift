@@ -112,7 +112,7 @@ struct TransportBar: View {
 
             Image(systemName: "minus.magnifyingglass")
             Slider(value: Binding(get: { log(model.pixelsPerSecond) }, set: { model.pixelsPerSecond = exp($0) }),
-                   in: log(0.5)...log(2000))
+                   in: log(0.1)...log(2000))
                 .frame(width: 160)
             Image(systemName: "plus.magnifyingglass")
 

@@ -278,7 +278,7 @@ final class EditorModel: ObservableObject {
         pendingSaveDirectory = nil
         notice = nil
         let duration = max(newProject.duration, 60)
-        pixelsPerSecond = max(1, min(200, 1100 / duration))
+        pixelsPerSecond = max(0.1, min(200, 1100 / duration))
         loadAudio()
     }
 
@@ -420,7 +420,7 @@ final class EditorModel: ObservableObject {
     }
 
     func zoom(by factor: Double) {
-        pixelsPerSecond = max(0.5, min(2000, pixelsPerSecond * factor))
+        pixelsPerSecond = max(0.1, min(2000, pixelsPerSecond * factor))
     }
 }
 
