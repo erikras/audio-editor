@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Session Version="Hindenburg Lite 1.90.2456" Samplerate="44100">
+ <Info Description="Two hosts catch up &amp; talk about &quot;travel&quot;." Genre="Podcast" Email="show@example.com" Author="Host A and Host B" Title="Ep. 1 – Pilot" Explicit="Yes" Link="https://example.com/rss.xml" Album="Example Show" Copyright="2026" Track="1" Keywords="comedy, travel" Date="November 6, 2026"/>
+ <AudioPool Path="final" Location="/Users/someone/Podcasting/EP1">
+  <File Id="1" Name="intro.wav" Duration="11.938" Channels="2" Leq="-14.7" Dyn="0.27">
+   <MetaData OriginalPath="/Users/someone/Music/intro.mp3"/>
+  </File>
+  <File Id="2" Name="outro-music.wav" Duration="59.434" Channels="2"/>
+  <File Id="3" Name="edit.wav" Duration="1:17:26.737">
+   <MetaData Title="EP1" OriginalPath="/Users/someone/Podcasting/EP1/edit.wav"/>
+  </File>
+ </AudioPool>
+ <Tracks>
+  <Track Name="Speak">
+   <Region Ref="3" Name="EP1" Start="05.205" Length="1:17:19.787" Offset="06.950" FadeIn="02.449" FadeOut="01.839"/>
+   <Plugins>
+    <Plugin Id="0" Name="Voice Profiler" UID="nhft" Bypass="False"/>
+    <Plugin Id="1" Name="Compressor" UID="nhcl" Comp="1" Bypass="False"/>
+   </Plugins>
+  </Track>
+  <Track Name="Intro" Volume="-13">
+   <Region Ref="1" Name="intro" Length="11.938" FadeIn="00.048" FadeOut="00.844" Gain="-8.3"/>
+   <Region Ref="2" Name="outro-music" Start="1:17:16.064" Length="43.120" Offset="16.314" FadeIn="08.938" FadeOut="01.291" Gain="-9.5">
+    <Fade Start="11.290" Length="01.828" Gain="-18.8"/>
+    <Fade Start="34.636" Length="02.500" Gain="-8.2"/>
+   </Region>
+   <Plugins>
+    <Plugin Id="0" Name="Voice Profiler" UID="nhft" Bypass="True"/>
+   </Plugins>
+  </Track>
+ </Tracks>
+ <Clipboard>
+  <Group Caption="Group 1"/>
+ </Clipboard>
+ <Markers>
+  <Marker Id="1" Name="In" Time="00.000"/>
+  <Marker Id="2" Name="Out" Time="1:10:22.276"/>
+ </Markers>
+</Session>
