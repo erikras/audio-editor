@@ -132,7 +132,8 @@ public final class MixRenderer {
     public static let preroll = 8192
 
     public init(project: Project, sources: [UUID: PCMData]) {
-        mixer = Mixer(project: project, sources: sources)
+        let mixer = Mixer(project: project, sources: sources)
+        self.mixer = mixer
         processors = (0..<mixer.trackCount).map { i in
             let info = mixer.trackInfo(i)
             return info.voice.enabled
