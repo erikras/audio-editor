@@ -30,6 +30,9 @@ struct ExportView: View {
                     Text("Mono").tag(true)
                 }
                 .pickerStyle(.segmented)
+                LabeledContent("Format") {
+                    Text("MP3, constant bitrate, \(Int(model.project.sampleRate)) Hz").foregroundStyle(.secondary)
+                }
                 Toggle("Normalize loudness", isOn: $normalize)
                 if normalize {
                     Picker("Target", selection: $target) {
@@ -46,6 +49,11 @@ struct ExportView: View {
 
             if !model.allSourcesReady {
                 Label("Some audio is still loading or missing; those regions will be silent.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            if !model.project.metadata.artworkPath.isEmpty,
+               !FileManager.default.fileExists(atPath: model.project.metadata.artworkPath) {
+                Label("Cover art not found, so the MP3 will have none. Choose it again under Episode Info.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
             if model.project.metadata.title.isEmpty {

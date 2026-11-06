@@ -173,7 +173,9 @@ public enum SessionImporter {
             case "Info" where parent == "Session":
                 var m = PodcastMetadata()
                 m.title = a["Title"] ?? ""
+                m.subtitle = a["Subtitle"] ?? ""
                 m.author = a["Author"] ?? ""
+                m.owner = a["Owner"] ?? ""
                 m.album = a["Album"] ?? ""
                 m.trackNumber = a["Track"] ?? ""
                 m.date = a["Date"] ?? ""

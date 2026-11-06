@@ -44,6 +44,30 @@ final class SessionImportTests: XCTestCase {
         XCTAssertEqual(m.artworkPath, "/Users/someone/Podcasting/EP1/final/Image.png")
     }
 
+    func testSubtitleAndOwner() throws {
+        let xml = #"<Session><Info Title="T" Subtitle="A short line" Owner="Some Owner"/></Session>"#
+        let m = try SessionImporter.importSession(data: Data(xml.utf8), sessionDirectory: "/s", fileExists: { _ in false }).project.metadata
+        XCTAssertEqual(m.subtitle, "A short line")
+        XCTAssertEqual(m.owner, "Some Owner")
+        let empty = try fixture().project.metadata
+        XCTAssertEqual(empty.subtitle, "")
+        XCTAssertEqual(empty.owner, "")
+    }
+
+    func testMetadataFromOlderProjectsStillDecodes() throws {
+        let old = #"{"title":"T","author":"A","album":"S","trackNumber":"1","date":"","genre":"News","description":"","copyright":"","email":"","link":"","keywords":"","explicit":true,"artworkPath":""}"#
+        let m = try JSONDecoder().decode(PodcastMetadata.self, from: Data(old.utf8))
+        XCTAssertEqual(m.title, "T")
+        XCTAssertEqual(m.genre, "News")
+        XCTAssertTrue(m.explicit)
+        XCTAssertEqual(m.subtitle, "")
+        XCTAssertEqual(m.owner, "")
+        var round = m
+        round.subtitle = "Sub"
+        round.owner = "Own"
+        XCTAssertEqual(try JSONDecoder().decode(PodcastMetadata.self, from: JSONEncoder().encode(round)), round)
+    }
+
     func testTracksRegionsAndFades() throws {
         let result = try fixture()
         let p = result.project
@@ -153,6 +177,38 @@ final class LoudnessTests: XCTestCase {
 }
 
 final class ID3Tests: XCTestCase {
+    /// Decodes the text of one UTF-16 text frame.
+    private func textFrame(_ id: String, in tag: Data) -> String? {
+        guard let r = tag.range(of: Data(id.utf8)) else { return nil }
+        let size = tag[(r.lowerBound + 4)..<(r.lowerBound + 8)].reduce(0) { ($0 << 8) | Int($1) }
+        let payload = tag[(r.lowerBound + 10)..<(r.lowerBound + 10 + size)]
+        return String(data: payload.dropFirst(), encoding: .utf16)
+    }
+
+    func testSubtitleOwnerSummaryAndEncoderFrames() {
+        var m = PodcastMetadata()
+        m.title = "T"
+        m.subtitle = "A short line"
+        m.owner = "Some Owner"
+        m.description = "Summary"
+        let tag = ID3Tag.build(metadata: m)
+        XCTAssertEqual(textFrame("TIT3", in: tag), "A short line")
+        XCTAssertEqual(textFrame("TOWN", in: tag), "Some Owner")
+        XCTAssertEqual(textFrame("TENC", in: tag), "Audio Editor")
+        XCTAssertNotNil(tag.range(of: Data("USLT".utf8)))
+        let size = tag[6...9].reduce(0) { ($0 << 7) | Int($1) }
+        XCTAssertEqual(size, tag.count - 10)
+    }
+
+    func testEmptyOptionalFieldsAreLeftOut() {
+        var m = PodcastMetadata()
+        m.title = "T"
+        let tag = ID3Tag.build(metadata: m)
+        for id in ["TIT3", "TOWN", "USLT", "COMM"] {
+            XCTAssertNil(tag.range(of: Data(id.utf8)), id)
+        }
+    }
+
     func testTagHeaderAndFrames() {
         var m = PodcastMetadata()
         m.title = "Ep. 1 – Pilot"

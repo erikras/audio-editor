@@ -20,7 +20,9 @@ public enum ID3Tag {
             frames.append(frame(id, textPayload(value)))
         }
         text("TIT2", m.title)
+        text("TIT3", m.subtitle)
         text("TPE1", m.author)
+        text("TOWN", m.owner)
         text("TALB", m.album)
         text("TRCK", m.trackNumber)
         if let year = m.year { text("TYER", year) }
@@ -28,6 +30,7 @@ public enum ID3Tag {
         text("TCOP", m.copyright)
         if !m.description.isEmpty {
             frames.append(frame("COMM", commentPayload(m.description)))
+            frames.append(frame("USLT", commentPayload(m.description)))   // same layout as COMM; some players only show this
             text("TDES", m.description)          // iTunes podcast description
         }
         text("TKWD", m.keywords)                 // iTunes podcast keywords
@@ -46,6 +49,8 @@ public enum ID3Tag {
         if !chapters.isEmpty {
             frames.append(chapterFrames(chapters))
         }
+
+        text("TENC", "Audio Editor")
 
         var tag = Data("ID3".utf8)
         tag.append(contentsOf: [3, 0, 0])            // v2.3.0, no flags

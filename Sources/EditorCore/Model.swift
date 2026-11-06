@@ -129,7 +129,10 @@ public struct Marker: Codable, Equatable, Identifiable {
 /// Episode metadata written into the exported MP3 as ID3 tags.
 public struct PodcastMetadata: Codable, Equatable {
     public var title = ""
+    public var subtitle = ""
     public var author = ""
+    /// Who owns the show, if different from the author.
+    public var owner = ""
     /// Show name.
     public var album = ""
     public var trackNumber = ""
@@ -145,6 +148,33 @@ public struct PodcastMetadata: Codable, Equatable {
     public var artworkPath = ""
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case title, subtitle, author, owner, album, trackNumber, date, genre, description, copyright, email, link, keywords, explicit, artworkPath
+    }
+
+    /// Fields may be absent in projects saved by earlier versions.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func string(_ key: CodingKeys, default fallback: String = "") throws -> String {
+            try c.decodeIfPresent(String.self, forKey: key) ?? fallback
+        }
+        title = try string(.title)
+        subtitle = try string(.subtitle)
+        author = try string(.author)
+        owner = try string(.owner)
+        album = try string(.album)
+        trackNumber = try string(.trackNumber)
+        date = try string(.date)
+        genre = try string(.genre, default: "Podcast")
+        description = try string(.description)
+        copyright = try string(.copyright)
+        email = try string(.email)
+        link = try string(.link)
+        keywords = try string(.keywords)
+        explicit = try c.decodeIfPresent(Bool.self, forKey: .explicit) ?? false
+        artworkPath = try string(.artworkPath)
+    }
 
     /// A four-digit year found in `date`, if any.
     public var year: String? {
