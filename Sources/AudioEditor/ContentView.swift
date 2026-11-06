@@ -220,6 +220,24 @@ struct TrackHeader: View {
                     .font(.caption.monospacedDigit())
                     .frame(width: 54, alignment: .trailing)
             }
+            HStack(spacing: 4) {
+                Toggle(isOn: Binding(get: { track.voice.enabled }, set: { on in model.updateTrack(track.id) { $0.voice.enabled = on } })) {
+                    Text("Voice").font(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .help("Speech processing: clean-up EQ, de-esser and compressor")
+                Slider(value: Binding(get: { track.voice.strength }, set: { v in
+                    model.liveEdit { p in
+                        if let i = p.tracks.firstIndex(where: { $0.id == track.id }) { p.tracks[i].voice.strength = (v * 20).rounded() / 20 }
+                    }
+                }), in: 0...1, onEditingChanged: { editing in editing ? model.beginGesture() : model.endGesture() })
+                .disabled(!track.voice.enabled)
+                .help("Strength")
+                Text(track.voice.enabled ? "\(Int((track.voice.strength * 100).rounded()))%" : "off")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
+            }
         }
         .padding(.horizontal, 10)
     }

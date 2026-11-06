@@ -62,6 +62,8 @@ public enum SessionImporter {
 
         for t in delegate.tracks {
             var track = Track(name: t.name, volumeDB: t.volumeDB)
+            // Tracks the session processed with voice effects get our speech chain instead.
+            track.voice.enabled = !t.activePlugins.isEmpty
             for r in t.regions {
                 guard let sourceID = idMap[r.ref] else { continue }
                 track.regions.append(Region(sourceID: sourceID, name: r.name, start: r.start, offset: r.offset, length: r.length,

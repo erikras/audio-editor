@@ -287,3 +287,126 @@ final class MP3ExportTests: XCTestCase {
     }
     #endif
 }
+
+
+final class VoiceTests: XCTestCase {
+    private func tone(_ freq: Double, amplitude: Double, seconds: Double, sr: Double = 44_100) -> [Float] {
+        (0..<Int(sr * seconds)).map { Float(amplitude * sin(2 * .pi * freq * Double($0) / sr)) }
+    }
+
+    private func rms(_ x: ArraySlice<Float>) -> Double {
+        (x.reduce(0.0) { $0 + Double($1 * $1) } / Double(max(x.count, 1))).squareRoot()
+    }
+
+    func testImportEnablesVoiceOnlyWhereTheSessionHadEffects() throws {
+        let url = Bundle.module.url(forResource: "sample", withExtension: "nhsx", subdirectory: "Fixtures")!
+        let p = try SessionImporter.importSession(data: Data(contentsOf: url), sessionDirectory: "/x", fileExists: { _ in false }).project
+        XCTAssertEqual(p.tracks.map(\.voice.enabled), [true, false])   // Speak had active effects, Intro's were bypassed
+    }
+
+    func testOlderTracksDecodeWithVoiceOff() throws {
+        let json = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","name":"Old","volumeDB":0,"muted":false,"regions":[]}"#
+        let track = try JSONDecoder().decode(Track.self, from: Data(json.utf8))
+        XCTAssertEqual(track.voice, VoiceSettings())
+        XCTAssertFalse(track.voice.enabled)
+    }
+
+    func testHighPassRemovesRumble() {
+        var low = tone(30, amplitude: 0.1, seconds: 1)
+        var mid = tone(1000, amplitude: 0.1, seconds: 1)
+        // Reference level well above the tones so the compressor stays out of the way.
+        let a = VoiceProcessor(sampleRate: 44_100, settings: VoiceSettings(enabled: true), referenceLevelDB: 0)
+        let b = VoiceProcessor(sampleRate: 44_100, settings: VoiceSettings(enabled: true), referenceLevelDB: 0)
+        var lowR = low, midR = mid
+        low.withUnsafeMutableBufferPointer { l in lowR.withUnsafeMutableBufferPointer { r in a.process(left: l.baseAddress!, right: r.baseAddress!, frameCount: l.count) } }
+        mid.withUnsafeMutableBufferPointer { l in midR.withUnsafeMutableBufferPointer { r in b.process(left: l.baseAddress!, right: r.baseAddress!, frameCount: l.count) } }
+        let lowDB = linearToDB(rms(low[22_050...])), midDB = linearToDB(rms(mid[22_050...]))
+        XCTAssertLessThan(lowDB, midDB - 9)
+    }
+
+    func testCompressorNarrowsLoudAndQuietPassages() {
+        let sr = 44_100.0
+        let loud = tone(1000, amplitude: 0.5, seconds: 1), quiet = tone(1000, amplitude: 0.05, seconds: 1)
+        var l = loud + quiet + loud + quiet
+        var r = l
+        let reference = linearToDB(0.5 / 2.0.squareRoot() * 0.5)   // between the two levels
+        let v = VoiceProcessor(sampleRate: sr, settings: VoiceSettings(enabled: true), referenceLevelDB: reference)
+        l.withUnsafeMutableBufferPointer { lp in r.withUnsafeMutableBufferPointer { rp in v.process(left: lp.baseAddress!, right: rp.baseAddress!, frameCount: lp.count) } }
+        let n = Int(sr)
+        let loudOut = rms(l[(2 * n + n / 2)..<(3 * n)]), quietOut = rms(l[(3 * n + n / 2)..<(4 * n)])
+        let spreadIn = 20.0, spreadOut = linearToDB(loudOut) - linearToDB(quietOut)
+        XCTAssertLessThan(spreadOut, spreadIn - 4)
+        XCTAssertGreaterThan(spreadOut, 4)    // still sounds like two levels, not flattened
+    }
+
+    func testChunkedRenderMatchesOneShotAndSeekIsDeterministic() {
+        let sr = 44_100.0
+        var x = [Float]()
+        for i in 0..<Int(sr * 3) {
+            let t = Double(i) / sr
+            x.append(Float(0.3 * sin(2 * .pi * 220 * t) * (0.5 + 0.5 * sin(2 * .pi * 1.3 * t)) + 0.05 * sin(2 * .pi * 7000 * t)))
+        }
+        let pcm = PCMData(channels: [x], sampleRate: sr)
+        var p = Project()
+        let s = AudioSource(name: "s", path: "/s", duration: 3, channels: 1)
+        p.sources = [s]
+        p.tracks = [Track(name: "Voice", regions: [Region(sourceID: s.id, name: "r", start: 0.2, offset: 0, length: 2.5, fadeIn: 0.3, fadeOut: 0.3)],
+                          voice: VoiceSettings(enabled: true))]
+        let total = Int(sr * 3)
+
+        func run(chunk: Int) -> [Float] {
+            let renderer = MixRenderer(project: p, sources: [s.id: pcm])
+            var out = [Float](repeating: 0, count: total), right = [Float](repeating: 0, count: total)
+            var pos = 0
+            out.withUnsafeMutableBufferPointer { o in
+                right.withUnsafeMutableBufferPointer { r in
+                    while pos < total {
+                        let n = min(chunk, total - pos)
+                        renderer.render(frameCount: n, left: o.baseAddress! + pos, right: r.baseAddress! + pos)
+                        pos += n
+                    }
+                }
+            }
+            return out
+        }
+        let oneShot = run(chunk: total)
+        XCTAssertEqual(run(chunk: 997), oneShot)
+        XCTAssertEqual(run(chunk: 512), oneShot)
+
+        // Seeking close ahead runs forward exactly; a far seek pre-rolls and lands close to the continuous render.
+        let renderer = MixRenderer(project: p, sources: [s.id: pcm])
+        renderer.seek(to: 4000)
+        var l = [Float](repeating: 0, count: 100), r = l
+        l.withUnsafeMutableBufferPointer { lp in r.withUnsafeMutableBufferPointer { rp in renderer.render(frameCount: 100, left: lp.baseAddress!, right: rp.baseAddress!) } }
+        XCTAssertEqual(l, Array(oneShot[4000..<4100]))
+        let far = MixRenderer(project: p, sources: [s.id: pcm])
+        far.seek(to: 100_000)
+        l.withUnsafeMutableBufferPointer { lp in r.withUnsafeMutableBufferPointer { rp in far.render(frameCount: 100, left: lp.baseAddress!, right: rp.baseAddress!) } }
+        for i in 0..<100 { XCTAssertEqual(l[i], oneShot[100_000 + i], accuracy: 0.01) }
+    }
+}
+
+final class TruePeakTests: XCTestCase {
+    /// A sine at a quarter of the sample rate, sampled 45° off its crests: samples read 0.707 but the wave reaches 1.0.
+    private func quarterRateSine(amplitude: Double, count: Int) -> [Float] {
+        (0..<count).map { Float(amplitude * sin(.pi / 2 * Double($0) + .pi / 4)) }
+    }
+
+    func testMeterFindsInterSamplePeak() {
+        let x = quarterRateSine(amplitude: 1, count: 4096)
+        XCTAssertEqual(Double(x.map(abs).max()!), 0.7071, accuracy: 0.001)
+        let meter = TruePeakMeter(channelCount: 1)
+        x.withUnsafeBufferPointer { meter.add(channels: [$0.baseAddress!], frameCount: $0.count) }
+        XCTAssertEqual(meter.truePeakDB, 0, accuracy: 0.3)
+    }
+
+    func testLimiterHoldsTruePeakCeiling() {
+        var x = quarterRateSine(amplitude: 1, count: 44_100)
+        let limiter = PeakLimiter(sampleRate: 44_100, channelCount: 1, ceilingDB: -1)
+        x.withUnsafeMutableBufferPointer { limiter.process(channels: [$0.baseAddress!], frameCount: $0.count) }
+        let meter = TruePeakMeter(channelCount: 1)
+        x.withUnsafeBufferPointer { meter.add(channels: [$0.baseAddress!], frameCount: $0.count) }
+        XCTAssertLessThanOrEqual(meter.truePeakDB, -1 + 0.3)
+        XCTAssertGreaterThan(meter.truePeakDB, -2)    // limits, doesn't crush
+    }
+}

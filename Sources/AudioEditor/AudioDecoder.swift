@@ -24,6 +24,7 @@ enum AudioDecoder {
             let cached = cacheDir.appendingPathComponent("\(key)-c\(channels).f32")
             if FileManager.default.fileExists(atPath: cached.path) {
                 let pcm = try PCMData(mappedFile: cached, channelCount: channels, sampleRate: sampleRate)
+                _ = pcm.activeLevelDB   // compute off the main thread; the voice chain reads it
                 return Decoded(pcm: pcm, peaks: pcm.peaks(framesPerBucket: framesPerPeak))
             }
         }
@@ -94,6 +95,7 @@ enum AudioDecoder {
         try? FileManager.default.removeItem(at: final)
         try FileManager.default.moveItem(at: partial, to: final)
         let pcm = try PCMData(mappedFile: final, channelCount: channels, sampleRate: sampleRate)
+        _ = pcm.activeLevelDB
         return Decoded(pcm: pcm, peaks: pcm.peaks(framesPerBucket: framesPerPeak))
     }
 

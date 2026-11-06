@@ -66,6 +66,36 @@ public final class PCMData: @unchecked Sendable {
 
     deinit { release() }
 
+    private var cachedActiveLevel: Double??
+    private let levelLock = NSLock()
+
+    /// Typical level of the audible parts in dBFS RMS: 100 ms blocks above -50 dBFS, energy-averaged.
+    /// nil for silence. Computed on first use and cached.
+    public var activeLevelDB: Double? {
+        levelLock.lock(); defer { levelLock.unlock() }
+        if let cached = cachedActiveLevel { return cached }
+        let block = max(Int(sampleRate * 0.1), 1)
+        let gate = dbToLinear(-50) * dbToLinear(-50)
+        var total = 0.0
+        var blocks = 0
+        var frame = 0
+        while frame < frameCount {
+            let end = min(frame + block, frameCount)
+            var energy = 0.0
+            for f in frame..<end {
+                var m: Float = 0
+                for c in 0..<channelCount { let x = samples[f * channelCount + c]; m = max(m, x * x) }
+                energy += Double(m)
+            }
+            energy /= Double(end - frame)
+            if energy > gate { total += energy; blocks += 1 }
+            frame = end
+        }
+        let level: Double? = blocks > 0 ? 10 * log10(total / Double(blocks)) : nil
+        cachedActiveLevel = .some(level)
+        return level
+    }
+
     public var duration: Double { Double(frameCount) / sampleRate }
 
     @inline(__always) public func sample(frame: Int, channel: Int) -> Float {

@@ -80,8 +80,8 @@ public struct ExportOptions: Equatable {
     public var mono = false
     /// Normalize the mix to this integrated loudness. nil leaves levels alone.
     public var loudnessTarget: Double? = -16
-    /// Peak ceiling before encoding. MP3 encoding overshoots, by about 1 dB on speech, so this sits below -1 dBFS.
-    /// Overshoot depends on the material, so the decoded peak isn't guaranteed, and inter-sample peaks can run higher.
+    /// True-peak ceiling of the mix before encoding (dBTP). MP3 encoding overshoots by roughly 1 dB on speech,
+    /// so this sits below the -1 dBTP that podcast platforms ask for.
     public var truePeakCeilingDB = -2.0
     /// Write markers as chapters.
     public var includeChapters = false
@@ -95,6 +95,8 @@ public struct ExportReport {
     public var measuredLoudness: Double?
     public var appliedGainDB: Double
     public var bytes: Int
+    /// True peak of the limited mix before MP3 encoding (dBTP).
+    public var truePeakDB: Double = -.infinity
 }
 
 public enum MP3Exporter {
@@ -104,17 +106,19 @@ public enum MP3Exporter {
     ///   - progress: called with 0...1; return false to cancel.
     public static func export(project: Project, sources: [UUID: PCMData], options: ExportOptions, to url: URL,
                               progress: (Double) -> Bool = { _ in true }) throws -> ExportReport {
-        let mixer = Mixer(project: project, sources: sources)
-        let total = mixer.durationFrames
+        var renderer = MixRenderer(project: project, sources: sources)
+        let total = renderer.durationFrames
         let chunk = 1 << 16
         let channelCount = options.mono ? 1 : 2
         var left = [Float](repeating: 0, count: chunk)
         var right = [Float](repeating: 0, count: chunk)
 
+        // Renders sequentially (the voice chain is stateful); `start` must follow on from the previous call.
         func renderChunk(_ start: Int, _ count: Int) {
+            precondition(start == renderer.position)
             left.withUnsafeMutableBufferPointer { l in
                 right.withUnsafeMutableBufferPointer { r in
-                    mixer.render(startFrame: start, frameCount: count, left: l.baseAddress!, right: r.baseAddress!)
+                    renderer.render(frameCount: count, left: l.baseAddress!, right: r.baseAddress!)
                     if options.mono {
                         for i in 0..<count { l[i] = (l[i] + r[i]) * 0.5 }
                     }
@@ -144,9 +148,11 @@ public enum MP3Exporter {
             if let measured { gainDB = target - measured }
         }
 
-        // Pass 2: render, apply gain + limiter, encode.
+        // Pass 2: render again from the start, apply gain + limiter, encode.
+        renderer = MixRenderer(project: project, sources: sources)
         let encoder = try MP3Encoder(sampleRate: Int(project.sampleRate), channelCount: channelCount, bitrateKbps: options.bitrateKbps)
         let limiter = PeakLimiter(sampleRate: project.sampleRate, channelCount: channelCount, ceilingDB: options.truePeakCeilingDB)
+        let peakMeter = TruePeakMeter(channelCount: channelCount)
         let gain = Float(dbToLinear(gainDB))
         let undoEncoderScale = 1 / encoder.inputScale
 
@@ -183,6 +189,7 @@ public enum MP3Exporter {
                     }
                     let ptrs = options.mono ? [l.baseAddress!] : [l.baseAddress!, r.baseAddress!]
                     limiter.process(channels: ptrs, frameCount: n)
+                    peakMeter.add(channels: ptrs.map { UnsafePointer($0) }, frameCount: n)
                     if undoEncoderScale != 1 {
                         for i in 0..<n { l[i] *= undoEncoderScale; r[i] *= undoEncoderScale }
                     }
@@ -205,7 +212,8 @@ public enum MP3Exporter {
             try handle.seek(toOffset: UInt64(tag.count))
             try handle.write(contentsOf: info)
         }
-        return ExportReport(duration: project.duration, measuredLoudness: measured, appliedGainDB: gainDB, bytes: bytes)
+        return ExportReport(duration: project.duration, measuredLoudness: measured, appliedGainDB: gainDB, bytes: bytes,
+                            truePeakDB: peakMeter.truePeakDB)
     }
 
     static func makeChapters(_ markers: [Marker], duration: Double) -> [ID3Tag.Chapter] {

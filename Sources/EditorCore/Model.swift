@@ -54,13 +54,39 @@ public struct Track: Codable, Equatable, Identifiable {
     public var volumeDB: Double = 0
     public var muted = false
     public var regions: [Region] = []
+    /// Speech processing (clean-up EQ, de-esser, compressor) applied to the whole track.
+    public var voice = VoiceSettings()
 
-    public init(id: UUID = UUID(), name: String, volumeDB: Double = 0, muted: Bool = false, regions: [Region] = []) {
+    public init(id: UUID = UUID(), name: String, volumeDB: Double = 0, muted: Bool = false, regions: [Region] = [],
+                voice: VoiceSettings = VoiceSettings()) {
         self.id = id
         self.name = name
         self.volumeDB = volumeDB
         self.muted = muted
         self.regions = regions
+        self.voice = voice
+    }
+
+    // Projects saved before a field existed still open.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Track"
+        volumeDB = try c.decodeIfPresent(Double.self, forKey: .volumeDB) ?? 0
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        regions = try c.decodeIfPresent([Region].self, forKey: .regions) ?? []
+        voice = try c.decodeIfPresent(VoiceSettings.self, forKey: .voice) ?? VoiceSettings()
+    }
+}
+
+/// Settings for the speech processing chain. `strength` 0...1 scales EQ, de-essing and compression; 0.5 is the default.
+public struct VoiceSettings: Codable, Equatable {
+    public var enabled = false
+    public var strength = 0.5
+
+    public init(enabled: Bool = false, strength: Double = 0.5) {
+        self.enabled = enabled
+        self.strength = strength
     }
 }
 

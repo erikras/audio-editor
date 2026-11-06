@@ -9,7 +9,7 @@ final class PlaybackEngine {
     private let engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode!
     private let lock = NSLock()
-    private var mixer: Mixer?
+    private var renderer: MixRenderer?
     private var position = 0
     private var playing = false
 
@@ -24,10 +24,11 @@ final class PlaybackEngine {
                   let r = buffers[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
             self.lock.lock()
             defer { self.lock.unlock() }
-            if self.playing, let mixer = self.mixer {
-                mixer.render(startFrame: self.position, frameCount: n, left: l, right: r)
+            if self.playing, let renderer = self.renderer {
+                if renderer.position != self.position { renderer.seek(to: self.position) }
+                renderer.render(frameCount: n, left: l, right: r)
                 self.position += n
-                if self.position >= mixer.durationFrames { self.position = mixer.durationFrames; self.playing = false }
+                if self.position >= renderer.durationFrames { self.position = renderer.durationFrames; self.playing = false }
             } else {
                 l.update(repeating: 0, count: n)
                 r.update(repeating: 0, count: n)
@@ -39,9 +40,13 @@ final class PlaybackEngine {
     }
 
     func update(project: Project, sources: [UUID: PCMData]) {
-        let next = Mixer(project: project, sources: sources)
+        let next = MixRenderer(project: project, sources: sources)
         lock.lock()
-        mixer = next
+        let at = position
+        lock.unlock()
+        next.seek(to: at)   // pre-roll outside the lock; the render callback re-seeks if playback moved meanwhile
+        lock.lock()
+        renderer = next
         lock.unlock()
     }
 

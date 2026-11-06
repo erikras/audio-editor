@@ -91,30 +91,37 @@ public final class LoudnessMeter {
     }
 }
 
-/// Look-ahead peak limiter that keeps output under `ceiling` (linear). Output is delayed by the look-ahead,
-/// so call `flush` at the end to drain it.
+/// Look-ahead limiter that keeps the output's true (inter-sample) peak under `ceiling`.
+/// Output is delayed by `latency` frames: render that many extra frames of silence at the end and drop as many at the start.
 public final class PeakLimiter {
     private let ceiling: Float
     private let lookahead: Int
+    private let detectDelay: Int
     private let attack: Float
     private let release: Float
     private let channelCount: Int
     private var delay: [[Float]]
     private var writeIndex = 0
     private var gain: Float = 1
-    // Monotonic deque of (input index, required gain) for a sliding minimum.
+    private var detectors: [TruePeakInterpolator]
+    private let truePeak: Bool
+    // Monotonic deque of (index, required gain) for a sliding minimum.
     private var dequeIndex: [Int]
     private var dequeValue: [Float]
     private var head = 0, tail = 0
     private var inputIndex = 0
 
-    public init(sampleRate: Double, channelCount: Int, ceilingDB: Double = -1, lookaheadMs: Double = 5, releaseMs: Double = 80) {
+    public init(sampleRate: Double, channelCount: Int, ceilingDB: Double = -1, lookaheadMs: Double = 5, releaseMs: Double = 80,
+                truePeak: Bool = true) {
         ceiling = Float(dbToLinear(ceilingDB))
-        lookahead = max(Int(sampleRate * lookaheadMs / 1000), 1)
+        self.truePeak = truePeak
+        detectDelay = truePeak ? TruePeakInterpolator.delay : 0
+        lookahead = max(Int(sampleRate * lookaheadMs / 1000), detectDelay + 1)
         attack = Float(1 - exp(-1.0 / (Double(lookahead) / 5)))
         release = Float(1 - exp(-1.0 / (sampleRate * releaseMs / 1000)))
         self.channelCount = channelCount
         delay = Array(repeating: Array(repeating: 0, count: lookahead), count: channelCount)
+        detectors = Array(repeating: TruePeakInterpolator(), count: channelCount)
         let cap = lookahead + 2
         dequeIndex = Array(repeating: 0, count: cap)
         dequeValue = Array(repeating: 1, count: cap)
@@ -124,23 +131,29 @@ public final class PeakLimiter {
     public func process(channels: [UnsafeMutablePointer<Float>], frameCount: Int) {
         let cap = dequeIndex.count
         for i in 0..<frameCount {
+            // Peak of the sample `detectDelay` frames back, including inter-sample overs.
             var peak: Float = 0
-            for c in 0..<channelCount { peak = max(peak, abs(channels[c][i])) }
+            for c in 0..<channelCount {
+                let x = channels[c][i]
+                let p = truePeak ? Float(detectors[c].push(Double(x))) : abs(x)
+                peak = max(peak, p)
+            }
             let required: Float = peak > ceiling ? ceiling / peak : 1
-            // Push into sliding-min deque.
+            let detectedIndex = inputIndex - detectDelay
             while head != tail {
                 let last = (tail - 1 + cap) % cap
                 if dequeValue[last] >= required { tail = last } else { break }
             }
-            dequeIndex[tail] = inputIndex
+            dequeIndex[tail] = detectedIndex
             dequeValue[tail] = required
             tail = (tail + 1) % cap
-            while dequeIndex[head] <= inputIndex - (lookahead + 1) { head = (head + 1) % cap }
-            let target = dequeValue[head]
+            // The sample leaving the delay line now is inputIndex - lookahead.
+            let outIndex = inputIndex - lookahead
+            while head != tail && dequeIndex[head] < outIndex { head = (head + 1) % cap }
+            let target = head != tail ? dequeValue[head] : 1
             gain += (target < gain ? attack : release) * (target - gain)
-            if target < gain && dequeIndex[head] == inputIndex - lookahead { gain = target }
+            if target < gain && dequeIndex[head] == outIndex { gain = target }
             inputIndex += 1
-            // Swap the current input into the delay line and emit the delayed sample.
             for c in 0..<channelCount {
                 let delayed = delay[c][writeIndex]
                 delay[c][writeIndex] = channels[c][i]
@@ -152,6 +165,6 @@ public final class PeakLimiter {
         }
     }
 
-    /// Number of frames still held in the delay line.
+    /// Frames of delay between input and output.
     public var latency: Int { lookahead }
 }

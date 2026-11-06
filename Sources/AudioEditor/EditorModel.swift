@@ -172,7 +172,7 @@ final class EditorModel: ObservableObject {
     }
 
     func addTrack() {
-        edit { $0.tracks.append(Track(name: "Track \($0.tracks.count + 1)")) }
+        edit { $0.tracks.append(Track(name: "Track \($0.tracks.count + 1)", voice: VoiceSettings(enabled: true))) }
         selectedTrackID = project.tracks.last?.id
     }
 
@@ -247,8 +247,9 @@ final class EditorModel: ObservableObject {
                 if !result.missingSources.isEmpty {
                     notes.append("Missing audio: " + result.missingSources.map(\.name).joined(separator: ", ") + ". Select a region and use Relink.")
                 }
-                if !result.ignoredPlugins.isEmpty {
-                    notes.append("Effects not applied: " + result.ignoredPlugins.joined(separator: ", ") + ".")
+                let voiced = result.project.tracks.filter(\.voice.enabled).map(\.name)
+                if !voiced.isEmpty {
+                    notes.append("The session's voice effects are replaced by Voice processing on " + voiced.joined(separator: ", ") + ".")
                 }
                 notice = notes.isEmpty ? nil : notes.joined(separator: " ")
             } else {
@@ -353,7 +354,7 @@ final class EditorModel: ObservableObject {
             if let id = selectedTrackID, let i = p.tracks.firstIndex(where: { $0.id == id }) {
                 trackIndex = i
             } else {
-                p.tracks.append(Track(name: "Track \(p.tracks.count + 1)"))
+                p.tracks.append(Track(name: "Track \(p.tracks.count + 1)", voice: VoiceSettings(enabled: true)))
                 trackIndex = p.tracks.count - 1
             }
             var cursor = at

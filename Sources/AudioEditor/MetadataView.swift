@@ -86,7 +86,7 @@ private struct CoverArtWell: View {
     @Binding var path: String
     @State private var isTargeted = false
 
-    private static let side: CGFloat = 170
+    private static let side: CGFloat = 110
 
     private var image: NSImage? { path.isEmpty ? nil : NSImage(contentsOfFile: path) }
 
