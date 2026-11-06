@@ -23,14 +23,27 @@ struct Biquad {
         return normalized((1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + alpha, -2 * c, 1 - alpha)
     }
 
+    static func lowShelf(frequency f: Double, gainDB: Double, sampleRate fs: Double) -> Biquad {
+        let A = pow(10, gainDB / 40), w = 2 * .pi * min(f, fs * 0.45) / fs, c = cos(w), k = 2 * A.squareRoot() * sin(w) / 2 * 2.0.squareRoot()
+        return normalized(A * ((A + 1) - (A - 1) * c + k), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - k),
+                          (A + 1) + (A - 1) * c + k, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - k)
+    }
+
+    static func highShelf(frequency f: Double, gainDB: Double, sampleRate fs: Double) -> Biquad {
+        let A = pow(10, gainDB / 40), w = 2 * .pi * min(f, fs * 0.45) / fs, c = cos(w), k = 2 * A.squareRoot() * sin(w) / 2 * 2.0.squareRoot()
+        return normalized(A * ((A + 1) + (A - 1) * c + k), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - k),
+                          (A + 1) - (A - 1) * c + k, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - k)
+    }
+
     static func peaking(frequency f: Double, q: Double, gainDB: Double, sampleRate fs: Double) -> Biquad {
         let A = pow(10, gainDB / 40), w = 2 * .pi * min(f, fs * 0.45) / fs, c = cos(w), alpha = sin(w) / (2 * q)
         return normalized(1 + alpha * A, -2 * c, 1 - alpha * A, 1 + alpha / A, -2 * c, 1 - alpha / A)
     }
 }
 
-/// Speech chain for one track: high-pass at 80 Hz, a small mud cut and presence lift, a de-esser,
-/// then a soft-knee RMS compressor whose threshold follows the track's own speaking level.
+/// Speech chain for one track: high-pass at 80 Hz, EQ, a de-esser, a soft-knee RMS compressor whose threshold follows
+/// the track's own speaking level, then a fast stage that catches plosives the compressor's attack lets through.
+/// The default sound was tuned by measuring against a finished speech master: fuller lows, less 2-3 kHz edge and more air.
 /// Stateful and sample-by-sample, so rendering in chunks gives exactly the same result as one pass.
 public final class VoiceProcessor {
     public let settings: VoiceSettings
@@ -38,14 +51,16 @@ public final class VoiceProcessor {
     public let referenceLevelDB: Double
 
     private var hpL: Biquad, hpR: Biquad
+    private var warmthL: Biquad, warmthR: Biquad
     private var mudL: Biquad, mudR: Biquad
-    private var presL: Biquad, presR: Biquad
+    private var edgeL: Biquad, edgeR: Biquad
+    private var airL: Biquad, airR: Biquad
     private var essL: Biquad, essR: Biquad
 
     // De-esser
     private let essCoeff: Double
     private var essHigh = 0.0, essFull = 0.0, essGain = 1.0
-    private let essThreshold = 0.3
+    private let essThreshold = 0.4
     private let essFloor: Double
     private let essSmooth: Double
 
@@ -55,6 +70,11 @@ public final class VoiceProcessor {
     private let makeupDB: Double
     private var rms = 0.0
     private var reductionDB = 0.0
+    // Plosive catcher
+    private var catchGain = 1.0
+    private let catchLevel: Double
+    private let catchSlope: Double
+    private let catchAttack: Double, catchRelease: Double
 
     public init(sampleRate fs: Double, settings: VoiceSettings, referenceLevelDB: Double) {
         self.settings = settings
@@ -62,8 +82,10 @@ public final class VoiceProcessor {
         let k = max(0, min(1, settings.strength)) * 2   // 0...2, 1 at the default strength
 
         hpL = .highpass(frequency: 80, q: 0.7071, sampleRate: fs); hpR = hpL
-        mudL = .peaking(frequency: 300, q: 1.0, gainDB: -2 * k, sampleRate: fs); mudR = mudL
-        presL = .peaking(frequency: 4000, q: 0.9, gainDB: 2 * k, sampleRate: fs); presR = presL
+        warmthL = .lowShelf(frequency: 160, gainDB: 3 * k, sampleRate: fs); warmthR = warmthL
+        mudL = .peaking(frequency: 300, q: 1.0, gainDB: -1 * k, sampleRate: fs); mudR = mudL
+        edgeL = .peaking(frequency: 2500, q: 0.9, gainDB: -2 * k, sampleRate: fs); edgeR = edgeL
+        airL = .highShelf(frequency: 8000, gainDB: 3 * k, sampleRate: fs); airR = airL
         essL = .highpass(frequency: 5500, q: 0.7071, sampleRate: fs); essR = essL
 
         essCoeff = 1 - exp(-1 / (0.004 * fs))
@@ -71,12 +93,17 @@ public final class VoiceProcessor {
         essFloor = dbToLinear(-6 * k)
 
         rmsCoeff = 1 - exp(-1 / (0.005 * fs))
-        attackCoeff = 1 - exp(-1 / (0.010 * fs))
+        attackCoeff = 1 - exp(-1 / (0.004 * fs))
         releaseCoeff = 1 - exp(-1 / (0.150 * fs))
         ratio = 1.5 + 1.5 * k                            // 3:1 at the default strength
-        threshold = referenceLevelDB + 2 - 4 * k         // 2 dB under the speaking level by default
-        let probe = referenceLevelDB + 4
-        makeupDB = -Self.staticReduction(level: probe, threshold: threshold, ratio: ratio, knee: knee) * 0.5
+        threshold = referenceLevelDB - 2 - 2 * k          // 4 dB under the speaking level by default
+        catchLevel = dbToLinear(referenceLevelDB + 12)
+        catchSlope = (1 - 1 / 6.0) * min(k, 1)             // 6:1 at the default strength
+        catchAttack = 1 - exp(-1 / (0.0005 * fs))
+        catchRelease = 1 - exp(-1 / (0.040 * fs))
+        // Makeup holds the track's loudness where it was, so processing doesn't shift the balance with music tracks.
+        let probe = referenceLevelDB + 9.5
+        makeupDB = -Self.staticReduction(level: probe, threshold: threshold, ratio: ratio, knee: knee) 
     }
 
     /// Gain change (dB, ≤ 0) of the compressor's static curve at `level`.
@@ -89,9 +116,10 @@ public final class VoiceProcessor {
     }
 
     public func reset() {
-        hpL.reset(); hpR.reset(); mudL.reset(); mudR.reset(); presL.reset(); presR.reset(); essL.reset(); essR.reset()
+        hpL.reset(); hpR.reset(); warmthL.reset(); warmthR.reset(); mudL.reset(); mudR.reset()
+        edgeL.reset(); edgeR.reset(); airL.reset(); airR.reset(); essL.reset(); essR.reset()
         essHigh = 0; essFull = 0; essGain = 1
-        rms = 0; reductionDB = 0
+        rms = 0; reductionDB = 0; catchGain = 1
     }
 
     public func process(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frameCount: Int) {
@@ -99,8 +127,8 @@ public final class VoiceProcessor {
             var l = Double(left[i]), r = Double(right[i])
 
             // Clean-up EQ.
-            l = presL.process(mudL.process(hpL.process(l)))
-            r = presR.process(mudR.process(hpR.process(r)))
+            l = airL.process(edgeL.process(mudL.process(warmthL.process(hpL.process(l)))))
+            r = airR.process(edgeR.process(mudR.process(warmthR.process(hpR.process(r)))))
 
             // De-esser: turn down only the band above ~5.5 kHz when it dominates.
             let hl = essL.process(l), hr = essR.process(r)
@@ -120,7 +148,13 @@ public final class VoiceProcessor {
             let level = 10 * log10(rms + 1e-12) + 3.0103   // +3 dB: RMS of a sine reads as its peak level
             let target = Self.staticReduction(level: level, threshold: threshold, ratio: ratio, knee: knee)
             reductionDB += (target < reductionDB ? attackCoeff : releaseCoeff) * (target - reductionDB)
-            let g = exp((reductionDB + makeupDB) * 0.11512925464970229)   // 10^(dB/20)
+            var g = exp((reductionDB + makeupDB) * 0.11512925464970229)   // 10^(dB/20)
+            // Plosive catcher: reacts within a millisecond and lets go quickly. Only loud peaks pay for the pow.
+            let post = max(abs(l), abs(r)) * g
+            var catchTarget = 1.0
+            if post > catchLevel { catchTarget = pow(catchLevel / post, catchSlope) }
+            catchGain += (catchTarget < catchGain ? catchAttack : catchRelease) * (catchTarget - catchGain)
+            g *= catchGain
 
             left[i] = Float(l * g)
             right[i] = Float(r * g)

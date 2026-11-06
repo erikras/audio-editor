@@ -129,7 +129,8 @@ public final class MixRenderer {
     public private(set) var position = 0
 
     /// Frames rendered and thrown away before a seek target so filters and the compressor have settled.
-    public static let preroll = 8192
+    /// Long enough for several time constants of the compressor's 150 ms release.
+    public static let preroll = 22_050
 
     public init(project: Project, sources: [UUID: PCMData]) {
         let mixer = Mixer(project: project, sources: sources)

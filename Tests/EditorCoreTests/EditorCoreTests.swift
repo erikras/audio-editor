@@ -324,6 +324,91 @@ final class VoiceTests: XCTestCase {
         XCTAssertLessThan(lowDB, midDB - 9)
     }
 
+    /// Speech-like noise in syllables, some phrases louder than others.
+    private func speechLike(seconds: Double, sampleRate sr: Double) -> [Float] {
+        var state: UInt64 = 0x2545F4914F6CDD1D
+        func noise() -> Float {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17
+            return Float(Int64(bitPattern: state) >> 40) / Float(1 << 23)
+        }
+        var low: Float = 0
+        return (0..<Int(sr * seconds)).map { i in
+            let t = Double(i) / sr
+            low += 0.2 * (noise() - low)
+            let syllable = Float(pow(max(0, sin(2 * .pi * 3.3 * t)), 2))
+            let phrase: Float = Int(t / 2) % 2 == 0 ? 0.4 : 0.1
+            return low * syllable * phrase
+        }
+    }
+
+    private func processed(_ input: [Float], strength: Double = 0.5, referenceLevelDB: Double, sampleRate sr: Double) -> [Float] {
+        let voice = VoiceProcessor(sampleRate: sr, settings: VoiceSettings(enabled: true, strength: strength), referenceLevelDB: referenceLevelDB)
+        var l = input, r = input
+        l.withUnsafeMutableBufferPointer { a in
+            r.withUnsafeMutableBufferPointer { b in voice.process(left: a.baseAddress!, right: b.baseAddress!, frameCount: a.count) }
+        }
+        return l
+    }
+
+    private func rmsDB(_ x: ArraySlice<Float>) -> Double {
+        10 * log10(x.reduce(0.0) { $0 + Double($1 * $1) } / Double(max(x.count, 1)) + 1e-20)
+    }
+
+    /// Processing shouldn't move a track's loudness much, or it shifts the balance with tracks that have no processing.
+    func testSpeechStaysNearItsOriginalLevel() {
+        let sr = 44_100.0
+        let x = speechLike(seconds: 16, sampleRate: sr)
+        let meter = { (y: [Float]) -> Double in
+            let m = LoudnessMeter(sampleRate: sr, channelCount: 1)
+            y.withUnsafeBufferPointer { m.add(channels: [$0.baseAddress!], frameCount: $0.count) }
+            return m.integratedLoudness!
+        }
+        let level = x.withUnsafeBufferPointer { _ in PCMData(channels: [x], sampleRate: sr).activeLevelDB! }
+        XCTAssertEqual(meter(processed(x, referenceLevelDB: level, sampleRate: sr)), meter(x), accuracy: 1.5)
+    }
+
+    func testPlosiveIsCaughtWithoutTouchingTheSpeechAroundIt() {
+        let sr = 44_100.0
+        var x = speechLike(seconds: 4, sampleRate: sr)
+        let level = PCMData(channels: [x], sampleRate: sr).activeLevelDB!
+        let quietBaseline = processed(x, referenceLevelDB: level, sampleRate: sr)
+        // A short low thump, far above the speech, at a moment when the compressor has had no warning.
+        let at = Int(sr * 2.4), length = Int(sr * 0.015)
+        for i in 0..<length { x[at + i] += Float(0.9 * sin(2 * .pi * 120 * Double(i) / sr)) }
+        let out = processed(x, referenceLevelDB: level, sampleRate: sr)
+        let peakIn = x[at..<(at + length)].map(abs).max()!
+        let peakOut = out[at..<(at + length)].map(abs).max()!
+        XCTAssertLessThan(20 * log10(peakOut / peakIn), -3)
+        // Half a second later everything has recovered.
+        let later = (at + Int(sr * 0.5))..<(at + Int(sr * 0.8))
+        XCTAssertEqual(rmsDB(out[later]), rmsDB(quietBaseline[later]), accuracy: 0.5)
+    }
+
+    func testEQLeansTowardWarmthAndAirAwayFromEdge() {
+        let sr = 44_100.0
+        // Each probe sits under a louder 1 kHz tone, so a lone high tone doesn't read as sibilance to the de-esser.
+        func gain(_ hz: Double) -> Double {
+            let probe = (0..<Int(sr)).map { 0.0001 * sin(2 * .pi * hz * Double($0) / sr) }
+            let bed = (0..<Int(sr)).map { 0.001 * sin(2 * .pi * 1_000 * Double($0) / sr) }
+            let out = processed(zip(probe, bed).map { Float($0 + (hz == 1_000 ? 0 : $1)) }, referenceLevelDB: 0, sampleRate: sr)
+            func amplitude(_ x: [Double]) -> Double {
+                var re = 0.0, im = 0.0
+                for i in (x.count / 2)..<x.count {
+                    let w = 2 * .pi * hz * Double(i) / sr
+                    re += x[i] * cos(w)
+                    im += x[i] * sin(w)
+                }
+                return 2 * (re * re + im * im).squareRoot() / Double(x.count - x.count / 2)
+            }
+            return 20 * log10(amplitude(out.map(Double.init)) / amplitude(probe))
+        }
+        let reference = gain(1_000)
+        XCTAssertEqual(gain(110) - reference, 2, accuracy: 1.5)
+        XCTAssertEqual(gain(2_500) - reference, -2, accuracy: 0.75)
+        XCTAssertEqual(gain(12_000) - reference, 3, accuracy: 1)
+        XCTAssertLessThan(gain(30) - reference, -12)
+    }
+
     func testCompressorNarrowsLoudAndQuietPassages() {
         let sr = 44_100.0
         let loud = tone(1000, amplitude: 0.5, seconds: 1), quiet = tone(1000, amplitude: 0.05, seconds: 1)
