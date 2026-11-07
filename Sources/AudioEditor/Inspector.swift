@@ -9,7 +9,7 @@ struct Inspector: View {
         if let region = model.selectedRegion {
             RegionInspector(region: region)
         } else {
-            Text("Select a region to adjust its position, fades and gain. Drag regions to align them; hold ⌥ to turn off snapping. Arrow keys nudge by 10 ms (⇧ for 100 ms). In a selected region, drag the yellow line for volume, ⌘-click to add a volume point, and right-click a point to delete it. Press M for a marker at the playhead; drag markers in the ruler and double-click to rename.")
+            Text("Select a region to adjust its position, fades and gain. Drag regions to align them; hold ⌥ to turn off snapping. Arrow keys nudge by 10 ms (⇧ for 100 ms). In a selected region, drag the yellow line for volume, ⌘-click to add a volume point, and right-click a point to delete it. Scroll up and down over the timeline to zoom (⌥ to scroll through tracks). Press M for a marker at the playhead; drag markers in the ruler and double-click to rename.")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()

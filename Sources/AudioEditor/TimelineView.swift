@@ -92,10 +92,16 @@ struct TimelineView: NSViewRepresentable {
         if canvas.skipRecenter {
             canvas.skipRecenter = false
         } else if oldPPS != snapshot.pixelsPerSecond, oldPPS > 0 {
-            let x = CGFloat(centerTime * snapshot.pixelsPerSecond) - visible.width / 2
+            let x: CGFloat
+            if let anchor = canvas.zoomAnchor {
+                x = CGFloat(anchor.time * snapshot.pixelsPerSecond) - anchor.offset
+            } else {
+                x = CGFloat(centerTime * snapshot.pixelsPerSecond) - visible.width / 2
+            }
             scroll.contentView.scroll(to: NSPoint(x: max(0, min(x, width - visible.width)), y: 0))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        canvas.zoomAnchor = nil
         // Follow the playhead while playing.
         if snapshot.isPlaying {
             let px = CGFloat(snapshot.playhead * snapshot.pixelsPerSecond)
@@ -114,6 +120,11 @@ final class TimelineCanvas: NSView {
     var callbacks: TimelineCallbacks?
     var appliedFitRequest = 0
     var skipRecenter = false
+    /// Set by scroll-wheel zoom: the time under the pointer and its distance from the
+    /// left edge of the visible area, so that moment stays under the pointer.
+    var zoomAnchor: (time: Double, offset: CGFloat)?
+    /// Within one trackpad gesture, whether it zooms (vertical) or pans (horizontal).
+    private var gestureZooms: Bool?
 
     private enum Drag {
         case move(regionID: UUID, grabOffset: Double, originalTrack: Int)
@@ -719,12 +730,38 @@ final class TimelineCanvas: NSView {
         callbacks?.zoom(1 + Double(event.magnification))
     }
 
+    /// Vertical scrolling zooms around the pointer; horizontal scrolling (or ⇧ with a
+    /// mouse wheel) pans. Hold ⌥ to scroll up and down through the tracks instead.
     override func scrollWheel(with event: NSEvent) {
-        if event.modifierFlags.contains(.command) {
-            callbacks?.zoom(event.scrollingDeltaY > 0 ? 1.1 : 1 / 1.1)
-        } else {
+        if event.modifierFlags.contains(.option) {
             super.scrollWheel(with: event)
+            return
         }
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        let zooms: Bool
+        if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+            // Trackpad: pick zoom or pan once per gesture so it doesn't jitter between them.
+            gestureZooms = abs(dy) > abs(dx)
+            zooms = gestureZooms!
+        } else if !event.phase.isEmpty || !event.momentumPhase.isEmpty {
+            zooms = gestureZooms ?? (abs(dy) > abs(dx))
+            // Let a pan coast, but stop zooming when the fingers lift.
+            if zooms && !event.momentumPhase.isEmpty { return }
+        } else {
+            zooms = abs(dy) > abs(dx)   // mouse wheel
+        }
+        guard zooms else {
+            super.scrollWheel(with: event)
+            return
+        }
+        guard dy != 0 else { return }
+        // Wheel or fingers moving up/away zooms in, whatever the natural-scrolling setting.
+        let up = event.isDirectionInvertedFromDevice ? -dy : dy
+        let step = event.hasPreciseScrollingDeltas ? up * 0.01 : up * 0.12
+        let factor = exp(max(-0.7, min(0.7, Double(step))))
+        let p = convert(event.locationInWindow, from: nil)
+        zoomAnchor = (time: time(p.x), offset: p.x - visibleRect.minX)
+        callbacks?.zoom(factor)
     }
 
     override func resetCursorRects() {
